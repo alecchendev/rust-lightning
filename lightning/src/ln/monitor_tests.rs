@@ -438,9 +438,13 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 3_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash,
+			payment_preimage,
 		}, Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash: timeout_payment_hash,
+			payment_preimage: timeout_payment_preimage,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -464,9 +468,13 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		}, Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 3_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash,
+			payment_preimage,
 		}, Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash: timeout_payment_hash,
+			payment_preimage: timeout_payment_preimage,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -543,6 +551,8 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		}, Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash: timeout_payment_hash,
+			payment_preimage: timeout_payment_preimage,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -557,6 +567,8 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		}, Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash: timeout_payment_hash,
+			payment_preimage: timeout_payment_preimage,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -568,6 +580,8 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert_eq!(vec![Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash: timeout_payment_hash,
+			payment_preimage: timeout_payment_preimage,
 		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
@@ -578,6 +592,8 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert_eq!(vec![Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
+			payment_hash: timeout_payment_hash,
+			payment_preimage: timeout_payment_preimage,
 		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
