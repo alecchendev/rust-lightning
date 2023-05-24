@@ -1288,6 +1288,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
 	}
 
+	pub fn get_signed_penalty_tx(&self, commitment_number: u64) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().get_signed_penalty_tx(commitment_number)
+	}
+
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
@@ -2555,6 +2559,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		ret
+	}
+
+	fn get_signed_penalty_tx(&self, commitment_number: u64) -> Result<Transaction, ()> {
+		todo!()
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret

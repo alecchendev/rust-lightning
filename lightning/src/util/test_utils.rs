@@ -264,6 +264,45 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 	}
 }
 
+pub struct WatchtowerState {
+	pub commitment_txid: Txid,
+	pub justice_tx: Transaction,
+}
+
+pub struct WatchtowerPersister {
+	pub persister: TestPersister,
+	pub channel_watchtower_state: Mutex<HashMap<OutPoint, HashMap<u64, WatchtowerState>>>,
+}
+
+impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
+	fn persist_new_channel(&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+		self.channel_watchtower_state.lock().unwrap().insert(funding_txo, HashMap::new()).expect("Should be empty on creation of channel");
+		self.persister.persist_new_channel(funding_txo, data, id)
+	}
+
+	fn update_persisted_channel(&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>, data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+		if let Some(up) = update {
+			for step in up.updates.iter() {
+				match step {
+					channelmonitor::ChannelMonitorUpdateStep::CommitmentSecret { idx, .. } => {
+						// this means channel monitor should have everything needed to create
+						// penalty tx for `idx`
+						let justice_tx = data.get_signed_penalty_tx(*idx).unwrap();
+						let commitment_txid = justice_tx.input.get(0).unwrap().previous_output.txid;
+						let value = WatchtowerState {
+							commitment_txid,
+							justice_tx,
+						};
+						self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap().insert(*idx, value).expect("Should only happen once");
+					},
+					_ => {},
+				}
+			}
+		}
+		self.persister.update_persisted_channel(funding_txo, update, data, update_id)
+	}
+}
+
 pub struct TestPersister {
 	/// The queue of update statuses we'll return. If none are queued, ::Completed will always be
 	/// returned.
