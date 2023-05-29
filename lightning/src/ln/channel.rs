@@ -20,7 +20,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, TxOut};
 
 use crate::ln::{PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
@@ -5986,9 +5986,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let (counterparty_commitment_txid, mut htlcs_ref) = self.build_commitment_no_state_update(logger);
+		let (counterparty_commitment_tx, counterparty_commitment_txid, mut htlcs_ref) = self.build_commitment_no_state_update(logger);
 		let htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
 			htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
+
+		let output_idxs = (0..counterparty_commitment_tx.output.len() as u32).collect::<HashSet<u32>>();
+		let htlc_idxs = htlcs.iter().filter_map(|(htlc, _)| htlc.transaction_output_index).collect::<HashSet<u32>>();
+		let non_htlc_outputs = output_idxs.difference(&htlc_idxs).map(|&idx| counterparty_commitment_tx.output[idx as usize].clone()).collect::<Vec<TxOut>>();
 
 		if self.announcement_sigs_state == AnnouncementSigsState::MessageSent {
 			self.announcement_sigs_state = AnnouncementSigsState::Committed;
@@ -6001,17 +6005,21 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				commitment_txid: counterparty_commitment_txid,
 				htlc_outputs: htlcs.clone(),
 				commitment_number: self.cur_counterparty_commitment_transaction_number,
-				their_per_commitment_point: self.counterparty_cur_commitment_point.unwrap()
+				their_per_commitment_point: self.counterparty_cur_commitment_point.unwrap(),
+				non_htlc_outputs,
 			}]
 		};
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 		monitor_update
 	}
 
-	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Transaction, Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys();
 		let commitment_stats = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
-		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
+		let trusted_commitment_tx = commitment_stats.tx.trust();
+		let counterparty_built_commitment_tx = trusted_commitment_tx.built_transaction();
+		let counterparty_commitment_tx = counterparty_built_commitment_tx.transaction.clone();
+		let counterparty_commitment_txid = counterparty_built_commitment_tx.txid;
 
 		#[cfg(any(test, fuzzing))]
 		{
@@ -6031,7 +6039,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		(counterparty_commitment_txid, commitment_stats.htlcs_included)
+		(counterparty_commitment_tx, counterparty_commitment_txid, commitment_stats.htlcs_included)
 	}
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
