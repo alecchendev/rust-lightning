@@ -31,7 +31,7 @@ use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::test_utils;
+use crate::util::test_utils::{self, WatchtowerPersister, TestPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
@@ -2522,6 +2522,62 @@ fn revoked_output_claim() {
 	// Send a payment through, updating everyone's latest commitment txn
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5000000);
 
+	// Inform nodes[1] that nodes[0] broadcast a stale tx
+	mine_transaction(&nodes[1], &revoked_local_txn[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	assert_eq!(node_txn.len(), 1); // ChannelMonitor: justice tx against revoked to_local output
+
+	check_spends!(node_txn[0], revoked_local_txn[0]);
+
+	// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
+	mine_transaction(&nodes[0], &revoked_local_txn[0]);
+	get_announce_close_broadcast_events(&nodes, 0, 1);
+	check_added_monitors!(nodes[0], 1);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+}
+
+// Create a persister that just get's ChannelMonitor's justice_tx and stores it
+// Turn off channel monitor somehow? or just don't call block_connected to trigger automatic
+// broadcast of justice tx
+
+#[test]
+fn test_channel_monitor_justice_tx() {
+	// Simple test to make sure that the justice tx fetched from ChannelMonitor during persistence
+	// is properly formed and can be broadcasted/confirmed successfully
+
+	// (Same as `revoked_output_claim` test but we get the justice tx + broadcast manually)
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	// chanmon_cfgs[1].persister = WatchtowerPersister {
+	// 	persister: TestPersister::new(),
+	// 	channel_watchtower_state: Mutex::new(HashMap::new()),
+	// };
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
+	assert_eq!(revoked_local_txn.len(), 1);
+	let starting_commitment_number = get_monitor!(nodes[1], chan_1.2).get_cur_holder_commitment_number();
+	// Only output is the full channel value back to nodes[0]:
+	assert_eq!(revoked_local_txn[0].output.len(), 1);
+	// Send a payment through, updating everyone's latest commitment txn
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5000000);
+
+	// Change here??
+	// Confirm revoked commitment transaction manually - don't call block/tx_connected on chanmon
+	// or just mine both transactions at once?
+	let justice_tx = get_monitor!(nodes[1], chan_1.2)
+		.get_signed_penalty_tx(starting_commitment_number).unwrap();
+	// get justice tx and broadcast manually instead of automatic by channel/chainmonitor
+	// Call block connected...? Then get claimable_balances and see that we got the money?
+	mine_transactions(&nodes[1], &[&revoked_local_txn[0], &justice_tx]);
+	// Check other stuff
+	return;
+
+	// COPIED OVER FROM PREVIOUS TEST
 	// Inform nodes[1] that nodes[0] broadcast a stale tx
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
