@@ -1288,6 +1288,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
 	}
 
+	/// TODO: docs
+	pub fn get_channel_keys_id(&self) -> [u8; 32] {
+		self.inner.lock().unwrap().get_channel_keys_id()
+	}
+
+	/// TODO: docs
+	pub fn get_channel_value_satoshis(&self) -> u64 {
+		self.inner.lock().unwrap().get_channel_value_satoshis()
+	}
+
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
@@ -2555,6 +2565,14 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		ret
+	}
+
+	pub(crate) fn get_channel_keys_id(&self) -> [u8; 32] {
+		self.channel_keys_id
+	}
+
+	pub(crate) fn get_channel_value_satoshis(&self) -> u64 {
+		self.channel_value_satoshis
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
