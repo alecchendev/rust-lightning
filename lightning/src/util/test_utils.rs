@@ -44,7 +44,7 @@ use bitcoin::blockdata::witness::Witness;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar, All};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
@@ -284,26 +284,69 @@ pub enum WatchtowerState {
 }
 
 pub struct WatchtowerPersister<'a> {
+	pub secp_ctx: Secp256k1<All>,
 	pub persister: TestPersister,
 	pub keys_manager: &'a TestKeysInterface,
 	pub channel_watchtower_state: Mutex<HashMap<OutPoint, HashMap<u64, WatchtowerState>>>,
 }
 
-// This is a macro to avoid dealing with secp256k1 context lifetimes
-macro_rules! get_revokeable_redeemscript {
-	($signer: expr, $secp_ctx: expr, $per_commitment_point: expr) => {{
-		let holder_pubkeys = $signer.pubkeys();
-		let counterparty_pubkeys = $signer.counterparty_pubkeys();
-		let revocation_pubkey = chan_utils::derive_public_revocation_key(&$secp_ctx, $per_commitment_point, &holder_pubkeys.revocation_basepoint);
-		let delayed_key = chan_utils::derive_public_key(&$secp_ctx, $per_commitment_point, &counterparty_pubkeys.delayed_payment_basepoint);
-		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, $signer.counterparty_selected_contest_delay(), &delayed_key);
-		revokeable_redeemscript
-	}}
+impl WatchtowerPersister<'_> {
+	fn get_revokeable_redeemscript(&self, channel_value_satoshis: u64, channel_keys_id: &[u8; 32], per_commitment_point: &PublicKey) -> Script {
+		let signer = self.keys_manager.derive_channel_keys(channel_value_satoshis, channel_keys_id);
+
+		let holder_pubkeys = signer.pubkeys();
+		let counterparty_pubkeys = signer.inner.counterparty_pubkeys();
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.secp_ctx, per_commitment_point, &holder_pubkeys.revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.secp_ctx, per_commitment_point, &counterparty_pubkeys.delayed_payment_basepoint);
+
+		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, signer.inner.counterparty_selected_contest_delay(), &delayed_key)
+	}
+
+	fn build_and_sign_justice_tx(&self, channel_value_satoshis: u64, channel_keys_id: &[u8; 32], commitment_txid: &Txid, output_idx: u32, value: u64, secret: &[u8; 32]) -> Transaction {
+		// Create the justice tx
+		let destination_script = self.keys_manager.get_destination_script().unwrap();
+		let mut justice_tx = Transaction {
+			version: 2,
+			lock_time: bitcoin::PackedLockTime::ZERO,
+			input: vec![TxIn {
+				previous_output: bitcoin::OutPoint {
+					txid: *commitment_txid,
+					vout: output_idx,
+				},
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
+				witness: Witness::new(),
+			}],
+			output: vec![TxOut {
+				script_pubkey: destination_script,
+				value: value, // what about fees?
+			}],
+		};
+
+		// Gather witness data
+		let signer = self.keys_manager.derive_channel_keys(channel_value_satoshis, channel_keys_id);
+		let per_commitment_key = SecretKey::from_slice(secret).unwrap();
+		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
+		let revokeable_redeemscript = self.get_revokeable_redeemscript(channel_value_satoshis, channel_keys_id, &per_commitment_point);
+
+		// Sign
+		let input_idx = 0;
+		let sig = signer.inner.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key, &self.secp_ctx).unwrap();
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[0].witness.push(ser_sig);
+		justice_tx.input[0].witness.push(vec!(1));
+		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
+
+		justice_tx
+	}
 }
 
 impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister<'_> {
 	fn persist_new_channel(&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		self.channel_watchtower_state.lock().unwrap().insert(funding_txo, HashMap::new()).expect("Should be empty on creation of channel");
+		self.channel_watchtower_state.lock().unwrap()
+			.insert(funding_txo, HashMap::new())
+			.expect("Should be empty on creation of channel");
 		self.persister.persist_new_channel(funding_txo, data, id)
 	}
 
@@ -312,68 +355,40 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 			for step in up.updates.iter() {
 				match step {
 					channelmonitor::ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs: _, commitment_number, their_per_commitment_point, non_htlc_outputs } => {
-						// store the commitment txid and revokeable output index to later form the
-						// justice tx once we get a revoke_and_ack with the commitment secret
-						let secp_ctx = Secp256k1::new();
-						let signer = self.keys_manager.derive_channel_keys(data.get_channel_value_satoshis(), &data.get_channel_keys_id());
-						let revokeable_redeemscript = get_revokeable_redeemscript!(signer.inner, secp_ctx, their_per_commitment_point);
+						// Find the revokeable output and store the data needed to build the
+						// justice tx later
+						let revokeable_redeemscript = self.get_revokeable_redeemscript(
+							data.get_channel_value_satoshis(),
+							&data.get_channel_keys_id(),
+							their_per_commitment_point);
 						let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
-						let (output_index, output) = non_htlc_outputs.iter().enumerate().find(|(_, output)| output.script_pubkey == revokeable_p2wsh).expect("Revoke script should match an output");
-						self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
+						let (output_idx, output) = non_htlc_outputs.iter().enumerate()
+							.find(|(_, output)| output.script_pubkey == revokeable_p2wsh)
+							.expect("Revoke script should match an output");
+
+						assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
 							.insert(*commitment_number, WatchtowerState::CounterpartyCommitmentTxSeen {
 								commitment_txid: *commitment_txid,
-								output_idx: output_index as u32,
+								output_idx: output_idx as u32,
 								value: output.value,
-							}).expect("Should only happen once");
+							}).is_none());
 					},
 					channelmonitor::ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
+						// Build the justice tx and store it
 						let mut channel_watchtower_state = self.channel_watchtower_state.lock().unwrap();
 						let justice_tx = match channel_watchtower_state.get(&funding_txo).unwrap().get(idx).unwrap() {
 							WatchtowerState::CounterpartyCommitmentTxSeen { commitment_txid, output_idx, value } => {
-
-								// Create the justice tx
-								let destination_script = self.keys_manager.get_destination_script().unwrap();
-								let mut justice_tx = Transaction {
-									version: 2,
-									lock_time: bitcoin::PackedLockTime::ZERO,
-									input: vec![TxIn {
-										previous_output: bitcoin::OutPoint {
-											txid: *commitment_txid,
-											vout: *output_idx,
-										},
-										script_sig: Script::new(),
-										sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
-										witness: Witness::new(),
-									}],
-									output: vec![TxOut {
-										script_pubkey: destination_script,
-										value: *value, // what about fees?
-									}],
-								};
-
-								// Gather witness data
-								let secp_ctx = Secp256k1::new();
-								let signer = self.keys_manager.derive_channel_keys(data.get_channel_value_satoshis(), &data.get_channel_keys_id());
-								let per_commitment_key = SecretKey::from_slice(secret).unwrap();
-								let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_key);
-								let revokeable_redeemscript = get_revokeable_redeemscript!(signer.inner, secp_ctx, &per_commitment_point);
-
-								// Sign
-								let sig = signer.inner.sign_justice_revoked_output(&justice_tx, 0, *value, &per_commitment_key, &secp_ctx).unwrap();
-								let mut ser_sig = sig.serialize_der().to_vec();
-								ser_sig.push(EcdsaSighashType::All as u8);
-								justice_tx.input[0].witness.push(ser_sig);
-								justice_tx.input[0].witness.push(vec!(1));
-								justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
-
-								justice_tx
+								self.build_and_sign_justice_tx(
+									data.get_channel_value_satoshis(),
+									&data.get_channel_keys_id(),
+									commitment_txid, *output_idx, *value, secret)
 							},
 							_ => panic!("Should only get a commitment secret after seeing a commitment tx"),
 						};
 
-						// Save
 						channel_watchtower_state.get_mut(&funding_txo).unwrap()
-							.insert(*idx, WatchtowerState::JusticeTxFormed(justice_tx)).expect("Should only happen once");
+							.insert(*idx, WatchtowerState::JusticeTxFormed(justice_tx))
+							.expect("Should only happen after previous update");
 					},
 					_ => {},
 				}
