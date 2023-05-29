@@ -31,12 +31,13 @@ use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, TxIn};
 
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
-use crate::ln::chan_utils;
-use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
+use crate::ln::chan_utils::{self, BuiltCommitmentTransaction};
+use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, CommitmentTransaction, TxCreationKeys};
+use crate::ln::channel::{Channel, ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
@@ -1288,8 +1289,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
 	}
 
-	pub fn get_signed_penalty_tx(&self, commitment_number: u64) -> Result<Transaction, ()> {
-		self.inner.lock().unwrap().get_signed_penalty_tx(commitment_number)
+	pub fn get_signed_penalty_tx<L: Deref>(&self, commitment_number: u64, commitment_txid: &Txid, value_to_self_msat: u64, logger: &L) -> Result<Transaction, ()> where L::Target: Logger {
+		self.inner.lock().unwrap().get_signed_penalty_tx(commitment_number, commitment_txid, value_to_self_msat, logger)
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -2561,8 +2562,110 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		ret
 	}
 
-	fn get_signed_penalty_tx(&self, commitment_number: u64) -> Result<Transaction, ()> {
-		todo!()
+	fn get_signed_penalty_tx<L: Deref>(&self, commitment_number: u64, commitment_txid: &Txid, value_to_self_msat: u64, logger: &L) -> Result<Transaction, ()>
+		where L::Target: Logger
+	{
+		if commitment_number < self.get_min_seen_secret() { return Err(()) }
+
+		// Get the funding pubkeys to form the commitment tx input
+		let holder_pubkeys = self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys;
+		let counterparty_pubkeys = match self.onchain_tx_handler.channel_transaction_parameters.counterparty_parameters {
+			Some(params) => params.pubkeys,
+			None => return Err(()),
+		};
+		let funding_pubkey_a = counterparty_pubkeys.funding_pubkey;
+		let funding_pubkey_b = holder_pubkeys.funding_pubkey;
+
+		// Derive public keys to be used in commitment tx formation
+		// from Channel::build_remote_tx_keys
+		let counterparty_pubkeys = counterparty_pubkeys;
+		let secret = self.get_secret(commitment_number).unwrap();
+		let per_commitment_key = match SecretKey::from_slice(&secret) {
+			Ok(key) => key,
+			Err(_) => return Err(()),
+		};
+		let counterparty_per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+		let keys = TxCreationKeys::derive_new(&self.onchain_tx_handler.secp_ctx, &counterparty_per_commitment_point, &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, &holder_pubkeys.revocation_basepoint, &holder_pubkeys.htlc_basepoint);
+
+		let included_non_dust_htlcs = self.counterparty_claimable_outpoints.get(commitment_txid).expect("Should have seen already");
+
+		let broadcaster_dust_limit_satoshis = MIN_CHAN_DUST_LIMIT_SATOSHIS; // PLACEHOLDER
+		let feerate_per_kw = 253; // PLACEHOLDER
+
+		// Calculate to_local/to_remote
+		// i think we don't have to use value_htlc_offset because we're only looking at included htlcs
+		let mut local_htlc_total_msat = 0;
+		let mut remote_htlc_total_msat = 0;
+		for (htlc, _) in included_non_dust_htlcs.iter() {
+			if htlc.offered { local_htlc_total_msat += htlc.amount_msat; }
+			else { remote_htlc_total_msat += htlc.amount_msat; }
+		}
+		let mut value_to_self_msat: i64 = (value_to_self_msat - local_htlc_total_msat) as i64;
+		let mut value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (value_to_self_msat as i64) - (remote_htlc_total_msat as i64);
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some());
+		let anchors_val = if self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
+		let (value_to_self, value_to_remote) = if self.onchain_tx_handler.channel_transaction_parameters.is_outbound_from_holder {
+			(value_to_self_msat as i64 / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat as i64 / 1000)
+		} else {
+			(value_to_self_msat as i64 / 1000, value_to_remote_msat as i64 / 1000 - anchors_val - total_fee_sat as i64)
+		};
+		let (value_to_a, value_to_b) = (value_to_remote, value_to_self);
+
+		// Set zero if below dust limit so it's not included
+		if value_to_a < broadcaster_dust_limit_satoshis as i64 { value_to_a = 0; };
+		if value_to_b < broadcaster_dust_limit_satoshis as i64 { value_to_b = 0; };
+
+		let channel_parameters = self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+
+		// Build the commitment tx
+		let built_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+			commitment_number,
+			value_to_a as u64,
+			value_to_b as u64,
+			self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some(),
+			funding_pubkey_a,
+			funding_pubkey_b,
+			keys.clone(),
+			feerate_per_kw,
+			included_non_dust_htlcs,
+			&channel_parameters
+		).trust().built_transaction();
+		let BuiltCommitmentTransaction { txid: commitment_txid, transaction: tx } = built_tx;
+
+		// Find the output in the commitment tx
+		let mut justice_package = None;
+		let mut to_counterparty_output_info: Option<(u32, u64)> = None;
+		let height = self.best_block.height(); // Don't know what this is for
+		// From `self.check_spend_counterparty_transaction`
+		// Get all the secrets and keys and whatnot
+		let secret = self.get_secret(commitment_number).unwrap();
+		let per_commitment_key = match SecretKey::from_slice(&secret) {
+			Ok(key) => key,
+			Err(_) => return Err(()),
+		};
+		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key); // can DRY up here using per_commitment_point
+
+		// Get the our counterparty's commitment tx's output that sends to them
+		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+		let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
+
+		for (idx, outp) in tx.output.iter().enumerate() {
+			if outp.script_pubkey == revokeable_p2wsh {
+				let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.opt_anchors());
+				justice_package = Some(PackageTemplate::build_package(*commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, height));
+				// claimable_outpoints.push(justice_package);
+				to_counterparty_output_info =
+					Some((idx.try_into().expect("Txn can't have more than 2^32 outputs"), outp.value));
+			}
+		}
+
+		// Sign the tx
+		match justice_package.unwrap().finalize_malleable_package(height, &self.onchain_tx_handler, to_counterparty_output_info.unwrap().1, self.destination_script, logger) {
+			Some(tx) => Ok(tx),
+			None => Err(()),
+		}
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret

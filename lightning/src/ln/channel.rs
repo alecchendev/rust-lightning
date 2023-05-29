@@ -2720,7 +2720,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	// Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
 	// Note that num_htlcs should not include dust HTLCs.
 	#[inline]
-	fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
+	pub(crate) fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
 		feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
 	}
 
