@@ -1298,8 +1298,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_revokeable_redeemscript(per_commitment_point)
 	}
 
-	pub fn build_and_sign_justice_tx(&self, outpoint: OutPoint, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
-		self.inner.lock().unwrap().build_and_sign_justice_tx(outpoint, value, per_commitment_secret)
+	pub fn build_and_sign_justice_tx(&self, commitment_txid: Txid, output_idx: u32, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().build_and_sign_justice_tx(commitment_txid, output_idx, value, per_commitment_secret)
 	}
 
 	/// TODO: docs
@@ -2582,15 +2582,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key)
 	}
 
-	pub(crate) fn build_and_sign_justice_tx(&self, outpoint: OutPoint, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
+	pub(crate) fn build_and_sign_justice_tx(&self, commitment_txid: Txid, output_idx: u32, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
 		// Create tx
 		let mut justice_tx = Transaction {
 			version: 2,
 			lock_time: bitcoin::PackedLockTime::ZERO,
 			input: vec![TxIn {
 				previous_output: bitcoin::OutPoint {
-					txid: outpoint.txid,
-					vout: outpoint.index as u32,
+					txid: commitment_txid,
+					vout: output_idx,
 				},
 				script_sig: Script::new(),
 				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
@@ -2607,9 +2607,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Create script for witness data
 		let per_commitment_key = SecretKey::from_slice(per_commitment_secret).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
-		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
-		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
-		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+		let revokeable_redeemscript = self.get_revokeable_redeemscript(per_commitment_point);
 
 		// Sign
 		let input_idx = 0;
