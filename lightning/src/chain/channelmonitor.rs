@@ -1294,23 +1294,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
 	}
 
+	pub fn get_revokeable_redeemscript(&self, per_commitment_point: PublicKey) -> Script {
+		self.inner.lock().unwrap().get_revokeable_redeemscript(per_commitment_point)
+	}
+
 	pub fn build_and_sign_justice_tx(&self, outpoint: OutPoint, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
 		self.inner.lock().unwrap().build_and_sign_justice_tx(outpoint, value, per_commitment_secret)
-	}
-
-	/// TODO: docs
-	pub fn get_channel_keys_id(&self) -> [u8; 32] {
-		self.inner.lock().unwrap().get_channel_keys_id()
-	}
-
-	/// TODO: docs
-	pub fn get_channel_value_satoshis(&self) -> u64 {
-		self.inner.lock().unwrap().get_channel_value_satoshis()
-	}
-
-	/// TODO: docs
-	pub(crate) fn get_counterparty_commitment_params(&self) -> CounterpartyCommitmentParameters {
-		self.inner.lock().unwrap().get_counterparty_commitment_params()
 	}
 
 	/// TODO: docs
@@ -2587,6 +2576,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		ret
 	}
 
+	pub(crate) fn get_revokeable_redeemscript(&self, per_commitment_point: PublicKey) -> Script {
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key)
+	}
+
 	pub(crate) fn build_and_sign_justice_tx(&self, outpoint: OutPoint, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
 		// Create tx
 		let mut justice_tx = Transaction {
@@ -2629,18 +2624,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
 
 		Ok(justice_tx)
-	}
-
-	pub(crate) fn get_channel_keys_id(&self) -> [u8; 32] {
-		self.channel_keys_id
-	}
-
-	pub(crate) fn get_channel_value_satoshis(&self) -> u64 {
-		self.channel_value_satoshis
-	}
-
-	pub(crate) fn get_counterparty_commitment_params(&self) -> CounterpartyCommitmentParameters {
-		self.counterparty_commitment_params.clone()
 	}
 
 	pub(crate) fn get_current_counterparty_commitment_txid(&self) -> Option<Txid> {

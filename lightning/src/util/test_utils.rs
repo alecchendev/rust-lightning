@@ -19,7 +19,6 @@ use crate::chain::transaction::OutPoint;
 use crate::sign;
 use crate::events;
 use crate::ln::channelmanager;
-use crate::ln::chan_utils;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
@@ -28,7 +27,6 @@ use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::{ChannelUsage, Score};
-use crate::sign::ChannelSigner;
 use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
@@ -290,7 +288,6 @@ pub struct WatchtowerPersister<'a> {
 }
 
 impl<'a> WatchtowerPersister<'a> {
-
 	pub(crate) fn new(persister: &'a TestPersister, keys_manager: &'a TestKeysInterface) -> Self {
 		WatchtowerPersister {
 			secp_ctx: Secp256k1::new(),
@@ -298,17 +295,6 @@ impl<'a> WatchtowerPersister<'a> {
 			keys_manager,
 			channel_watchtower_state: Mutex::new(HashMap::new()),
 		}
-	}
-
-	fn get_revokeable_redeemscript(&self, channel_value_satoshis: u64, channel_keys_id: &[u8; 32], per_commitment_point: &PublicKey, counterparty_delayed_payment_basepoint: &PublicKey, counterparty_selected_contest_delay: u16) -> Script {
-		// Not how we should be using keys
-		let signer = self.keys_manager.derive_channel_keys(channel_value_satoshis, channel_keys_id);
-
-		let holder_pubkeys = signer.pubkeys();
-		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.secp_ctx, per_commitment_point, &holder_pubkeys.revocation_basepoint);
-		let delayed_key = chan_utils::derive_public_key(&self.secp_ctx, per_commitment_point, &counterparty_delayed_payment_basepoint);
-
-		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, counterparty_selected_contest_delay, &delayed_key)
 	}
 }
 
@@ -321,9 +307,8 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		// so we get the same info and update the watchtower
 		let commitment_number = (1u64 << 48) - 1; // very first commitment number
 		let output_idx = 0;
-		let value = 99806; // data.get_channel_value_satoshis(); fixed temporarily because I don't feel like finding funding tx weight
+		let value = 99806; // fixed temporarily because I don't feel like finding funding tx weight
 		let commitment_txid = data.get_current_counterparty_commitment_txid().expect("Should have at least one counterparty commitment tx");
-		println!("new channel txid: {:?}", commitment_txid);
 		assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
 			.insert(commitment_number, WatchtowerState::CounterpartyCommitmentTxSeen {
 				commitment_txid,
@@ -341,13 +326,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 					channelmonitor::ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs: _, commitment_number, their_per_commitment_point, non_htlc_outputs } => {
 						// Find the revokeable output and store the data needed to build the
 						// justice tx later
-						let params = data.get_counterparty_commitment_params();
-						let revokeable_redeemscript = self.get_revokeable_redeemscript(
-							data.get_channel_value_satoshis(),
-							&data.get_channel_keys_id(),
-							their_per_commitment_point,
-							&params.counterparty_delayed_payment_base_key,
-							params.on_counterparty_tx_csv);
+						let revokeable_redeemscript = data.get_revokeable_redeemscript(*their_per_commitment_point);
 						let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
 						let (output_idx, output) = match non_htlc_outputs.iter().enumerate()
 							.find(|(_, output)| output.script_pubkey == revokeable_p2wsh) {
