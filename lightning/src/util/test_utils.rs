@@ -32,6 +32,9 @@ use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
+use bitcoin::EcdsaSighashType;
+use bitcoin::TxIn;
+use bitcoin::Witness;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -282,15 +285,61 @@ pub enum WatchtowerState {
 
 pub struct WatchtowerPersister<'a> {
 	pub persister: &'a TestPersister,
+	pub destination_script: Script,
 	pub channel_watchtower_state: Mutex<HashMap<OutPoint, HashMap<u64, WatchtowerState>>>,
 }
 
 impl<'a> WatchtowerPersister<'a> {
-	pub(crate) fn new(persister: &'a TestPersister) -> Self {
+	pub(crate) fn new(persister: &'a TestPersister, destination_script: Script) -> Self {
 		WatchtowerPersister {
 			persister,
+			destination_script,
 			channel_watchtower_state: Mutex::new(HashMap::new()),
 		}
+	}
+
+	fn build_justice_tx(&self, commitment_txid: Txid, output_idx: u32, value: u64) -> Transaction {
+		let mut justice_tx = Transaction {
+			version: 2,
+			lock_time: bitcoin::PackedLockTime::ZERO,
+			input: vec![TxIn {
+				previous_output: bitcoin::OutPoint {
+					txid: commitment_txid,
+					vout: output_idx,
+				},
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
+				witness: Witness::new(),
+			}],
+			output: vec![TxOut {
+				script_pubkey: self.destination_script.clone(),
+				value,
+			}],
+		};
+		let min_fee = (justice_tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+		justice_tx.output[0].value -= min_fee * 2; // arbitrary, temp
+		justice_tx
+	}
+
+	fn sign_justice_tx<Signer: sign::WriteableEcdsaChannelSigner>(&self, mut justice_tx: Transaction, secret: &[u8; 32], value: u64, data: &channelmonitor::ChannelMonitor<Signer>) -> Result<Transaction, ()> {
+		let secp_ctx = Secp256k1::new();
+		let per_commitment_key = SecretKey::from_slice(secret).unwrap();
+		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_key);
+		let revokeable_redeemscript = data.get_revokeable_redeemscript(per_commitment_point);
+
+		let input_idx = 0;
+		let sig = match data.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key) {
+			Ok(sig) => sig,
+			Err(_) => return Err(()),
+		};
+
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[0].witness.push(ser_sig);
+		justice_tx.input[0].witness.push(vec!(1));
+		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
+
+		Ok(justice_tx)
 	}
 }
 
@@ -342,7 +391,8 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 						let mut channel_watchtower_state = self.channel_watchtower_state.lock().unwrap();
 						let justice_tx = match channel_watchtower_state.get(&funding_txo).unwrap().get(idx) {
 							Some(WatchtowerState::CounterpartyCommitmentTxSeen { commitment_txid, output_idx, value }) => {
-								data.build_and_sign_justice_tx(*commitment_txid, *output_idx, *value, secret).expect("Should have no signing failure")
+								let justice_tx = self.build_justice_tx(*commitment_txid, *output_idx, *value);
+								self.sign_justice_tx(justice_tx, secret, *value, data).expect("Should be able to sign justice tx")
 							},
 							_ => { println!("Should only get a commitment secret after seeing a commitment tx except for the first tx"); break },
 						};

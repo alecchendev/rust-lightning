@@ -21,11 +21,9 @@
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxIn, TxOut, Transaction, EcdsaSighashType};
+use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::witness::Witness;
-use bitcoin::Sequence;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1298,8 +1296,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_revokeable_redeemscript(per_commitment_point)
 	}
 
-	pub fn build_and_sign_justice_tx(&self, commitment_txid: Txid, output_idx: u32, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
-		self.inner.lock().unwrap().build_and_sign_justice_tx(commitment_txid, output_idx, value, per_commitment_secret)
+	pub(crate) fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input_idx: usize, value: u64, per_commitment_key: &SecretKey) -> Result<Signature, ()> {
+		self.inner.lock().unwrap().sign_justice_revoked_output(justice_tx, input_idx, value, per_commitment_key)
 	}
 
 	/// TODO: docs
@@ -2582,46 +2580,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key)
 	}
 
-	pub(crate) fn build_and_sign_justice_tx(&self, commitment_txid: Txid, output_idx: u32, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
-		// Create tx
-		let mut justice_tx = Transaction {
-			version: 2,
-			lock_time: bitcoin::PackedLockTime::ZERO,
-			input: vec![TxIn {
-				previous_output: bitcoin::OutPoint {
-					txid: commitment_txid,
-					vout: output_idx,
-				},
-				script_sig: Script::new(),
-				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
-				witness: Witness::new(),
-			}],
-			output: vec![TxOut {
-				script_pubkey: self.destination_script.clone(),
-				value,
-			}],
-		};
-		let min_fee = (justice_tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-		justice_tx.output[0].value -= min_fee * 2; // arbitrary, temp
-
-		// Create script for witness data
-		let per_commitment_key = SecretKey::from_slice(per_commitment_secret).unwrap();
-		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
-		let revokeable_redeemscript = self.get_revokeable_redeemscript(per_commitment_point);
-
-		// Sign
-		let input_idx = 0;
-		let sig = match self.onchain_tx_handler.signer.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx) {
-			Ok(sig) => sig,
-			Err(_) => return Err(()),
-		};
-		let mut ser_sig = sig.serialize_der().to_vec();
-		ser_sig.push(EcdsaSighashType::All as u8);
-		justice_tx.input[0].witness.push(ser_sig);
-		justice_tx.input[0].witness.push(vec!(1));
-		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
-
-		Ok(justice_tx)
+	pub(crate) fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input_idx: usize, value: u64, per_commitment_key: &SecretKey) -> Result<Signature, ()> {
+		self.onchain_tx_handler.signer.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)
 	}
 
 	pub(crate) fn get_current_counterparty_commitment_txid(&self) -> Option<Txid> {

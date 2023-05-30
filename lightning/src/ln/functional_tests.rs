@@ -17,7 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource};
+use crate::sign::{ChannelSigner, EcdsaChannelSigner, EntropySource, SignerProvider};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
@@ -2546,8 +2546,8 @@ fn test_forming_justice_tx_from_monitor_updates() {
 	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let persisters = vec![
-		WatchtowerPersister::new(&chanmon_cfgs[0].persister),
-		WatchtowerPersister::new(&chanmon_cfgs[1].persister),
+		WatchtowerPersister::new(&chanmon_cfgs[0].persister, chanmon_cfgs[0].keys_manager.get_destination_script().unwrap()),
+		WatchtowerPersister::new(&chanmon_cfgs[1].persister, chanmon_cfgs[1].keys_manager.get_destination_script().unwrap()),
 	];
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, &persisters);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
