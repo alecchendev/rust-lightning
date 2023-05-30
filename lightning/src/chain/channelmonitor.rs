@@ -21,9 +21,11 @@
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
+use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxIn, TxOut, Transaction, EcdsaSighashType};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::witness::Witness;
+use bitcoin::Sequence;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1290,6 +1292,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
+	}
+
+	pub fn build_and_sign_justice_tx(&self, outpoint: OutPoint, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().build_and_sign_justice_tx(outpoint, value, per_commitment_secret)
 	}
 
 	/// TODO: docs
@@ -2579,6 +2585,50 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		ret
+	}
+
+	pub(crate) fn build_and_sign_justice_tx(&self, outpoint: OutPoint, value: u64, per_commitment_secret: &[u8; 32]) -> Result<Transaction, ()> {
+		// Create tx
+		let mut justice_tx = Transaction {
+			version: 2,
+			lock_time: bitcoin::PackedLockTime::ZERO,
+			input: vec![TxIn {
+				previous_output: bitcoin::OutPoint {
+					txid: outpoint.txid,
+					vout: outpoint.index as u32,
+				},
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
+				witness: Witness::new(),
+			}],
+			output: vec![TxOut {
+				script_pubkey: self.destination_script.clone(),
+				value,
+			}],
+		};
+		let min_fee = (justice_tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+		justice_tx.output[0].value -= min_fee * 2; // arbitrary, temp
+
+		// Create script for witness data
+		let per_commitment_key = SecretKey::from_slice(per_commitment_secret).unwrap();
+		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+
+		// Sign
+		let input_idx = 0;
+		let sig = match self.onchain_tx_handler.signer.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx) {
+			Ok(sig) => sig,
+			Err(_) => return Err(()),
+		};
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[0].witness.push(ser_sig);
+		justice_tx.input[0].witness.push(vec!(1));
+		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
+
+		Ok(justice_tx)
 	}
 
 	pub(crate) fn get_channel_keys_id(&self) -> [u8; 32] {

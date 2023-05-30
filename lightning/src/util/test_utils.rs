@@ -35,11 +35,10 @@ use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
-use bitcoin::blockdata::witness::Witness;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
@@ -311,51 +310,6 @@ impl<'a> WatchtowerPersister<'a> {
 
 		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, counterparty_selected_contest_delay, &delayed_key)
 	}
-
-	fn build_and_sign_justice_tx(&self, channel_value_satoshis: u64, channel_keys_id: &[u8; 32], commitment_txid: &Txid, output_idx: u32, value: u64, secret: &[u8; 32], counterparty_delayed_payment_basepoint: &PublicKey, counterparty_selected_contest_delay: u16) -> Transaction {
-		// Create the justice tx
-		let destination_script = self.keys_manager.get_destination_script().unwrap();
-		let mut justice_tx = Transaction {
-			version: 2,
-			lock_time: bitcoin::PackedLockTime::ZERO,
-			input: vec![TxIn {
-				previous_output: bitcoin::OutPoint {
-					txid: *commitment_txid,
-					vout: output_idx,
-				},
-				script_sig: Script::new(),
-				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
-				witness: Witness::new(),
-			}],
-			output: vec![TxOut {
-				script_pubkey: destination_script,
-				value: value, // what about fees?
-			}],
-		};
-		let min_fee = (justice_tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-		justice_tx.output[0].value -= min_fee * 2; // arbitrary, temp
-
-		// Gather witness data
-		let signer = self.keys_manager.derive_channel_keys(channel_value_satoshis, channel_keys_id);
-		let per_commitment_key = SecretKey::from_slice(secret).unwrap();
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-		let revokeable_redeemscript = self.get_revokeable_redeemscript(channel_value_satoshis, channel_keys_id, &per_commitment_point, counterparty_delayed_payment_basepoint, counterparty_selected_contest_delay);
-
-		// Sign
-		let revocation_key = chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &signer.inner.revocation_base_key);
-		let input_idx = 0;
-		let mut sighash_parts = bitcoin::util::sighash::SighashCache::new(&justice_tx);
-		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input_idx, &revokeable_redeemscript, value, EcdsaSighashType::All).unwrap()[..]);
-		let sig = crate::util::crypto::sign_with_aux_rand(&self.secp_ctx, &sighash, &revocation_key, &Box::new(signer.inner));
-		// let sig = signer.inner.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key, &self.secp_ctx).unwrap();
-		let mut ser_sig = sig.serialize_der().to_vec();
-		ser_sig.push(EcdsaSighashType::All as u8);
-		justice_tx.input[0].witness.push(ser_sig);
-		justice_tx.input[0].witness.push(vec!(1));
-		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
-
-		justice_tx
-	}
 }
 
 impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister<'_> {
@@ -410,16 +364,11 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 					},
 					channelmonitor::ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 						// Build the justice tx and store it
-						let params = data.get_counterparty_commitment_params();
 						let mut channel_watchtower_state = self.channel_watchtower_state.lock().unwrap();
 						let justice_tx = match channel_watchtower_state.get(&funding_txo).unwrap().get(idx) {
 							Some(WatchtowerState::CounterpartyCommitmentTxSeen { commitment_txid, output_idx, value }) => {
-								self.build_and_sign_justice_tx(
-									data.get_channel_value_satoshis(),
-									&data.get_channel_keys_id(),
-									commitment_txid, *output_idx, *value, secret,
-									&params.counterparty_delayed_payment_base_key,
-									params.on_counterparty_tx_csv)
+								let outpoint = OutPoint { txid: *commitment_txid, index: *output_idx as u16 };
+								data.build_and_sign_justice_tx(outpoint, *value, secret).expect("Should have no signing failure")
 							},
 							_ => { println!("Should only get a commitment secret after seeing a commitment tx except for the first tx"); break },
 						};
