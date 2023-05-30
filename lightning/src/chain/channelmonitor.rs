@@ -286,11 +286,9 @@ impl HolderSignedTx {
 /// justice or 2nd-stage preimage/timeout transactions.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CounterpartyCommitmentParameters {
-	/// TODO: docs
-	pub counterparty_delayed_payment_base_key: PublicKey,
+	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
-	/// TODO: docs
-	pub on_counterparty_tx_csv: u16,
+	on_counterparty_tx_csv: u16,
 }
 
 impl Writeable for CounterpartyCommitmentParameters {
