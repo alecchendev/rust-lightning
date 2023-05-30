@@ -33,7 +33,6 @@ use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
-use crate::sign::EcdsaChannelSigner;
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
@@ -333,6 +332,8 @@ impl<'a> WatchtowerPersister<'a> {
 				value: value, // what about fees?
 			}],
 		};
+		let min_fee = (justice_tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+		justice_tx.output[0].value -= min_fee * 2; // arbitrary, temp
 
 		// Gather witness data
 		let signer = self.keys_manager.derive_channel_keys(channel_value_satoshis, channel_keys_id);
@@ -361,6 +362,21 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 	fn persist_new_channel(&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		assert!(self.channel_watchtower_state.lock().unwrap()
 			.insert(funding_txo, HashMap::new()).is_none());
+
+		// No ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo is persisted on channel creation
+		// so we get the same info and update the watchtower
+		let commitment_number = (1u64 << 48) - 1; // very first commitment number
+		let output_idx = 0;
+		let value = 99806; // data.get_channel_value_satoshis(); fixed temporarily because I don't feel like finding funding tx weight
+		let commitment_txid = data.get_current_counterparty_commitment_txid().expect("Should have at least one counterparty commitment tx");
+		println!("new channel txid: {:?}", commitment_txid);
+		assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
+			.insert(commitment_number, WatchtowerState::CounterpartyCommitmentTxSeen {
+				commitment_txid,
+				output_idx,
+				value,
+			}).is_none());
+
 		self.persister.persist_new_channel(funding_txo, data, id)
 	}
 
