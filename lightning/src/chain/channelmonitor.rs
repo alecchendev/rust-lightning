@@ -1290,11 +1290,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
 	}
 
+	/// TODO: docs
 	pub fn get_revokeable_redeemscript(&self, per_commitment_point: PublicKey) -> Script {
 		self.inner.lock().unwrap().get_revokeable_redeemscript(per_commitment_point)
 	}
 
-	pub(crate) fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input_idx: usize, value: u64, per_commitment_key: &SecretKey) -> Result<Signature, ()> {
+	/// TODO: docs
+	pub fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input_idx: usize, value: u64, per_commitment_key: &SecretKey) -> Result<Signature, ()> {
 		self.inner.lock().unwrap().sign_justice_revoked_output(justice_tx, input_idx, value, per_commitment_key)
 	}
 
