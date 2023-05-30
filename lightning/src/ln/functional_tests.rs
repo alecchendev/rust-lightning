@@ -2538,16 +2538,12 @@ fn revoked_output_claim() {
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 }
 
-// Create a persister that just get's ChannelMonitor's justice_tx and stores it
-// Turn off channel monitor somehow? or just don't call block_connected to trigger automatic
-// broadcast of justice tx
-
 #[test]
 fn test_forming_justice_tx_from_monitor_updates() {
-	// Simple test to make sure that the justice tx fetched from ChannelMonitor during persistence
-	// is properly formed and can be broadcasted/confirmed successfully
-
-	// (Same as `revoked_output_claim` test but we get the justice tx + broadcast manually)
+	// Simple test to make sure that the justice tx formed in WatchtowerPersister
+	// is properly formed and can be broadcasted/confirmed successfully in the event
+	// that a revoked commitment transaction is broadcasted
+	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let persisters = vec![
 		WatchtowerPersister::new(&chanmon_cfgs[0].persister, &chanmon_cfgs[0].keys_manager),
@@ -2567,32 +2563,34 @@ fn test_forming_justice_tx_from_monitor_updates() {
 	// Send a payment through, updating everyone's latest commitment txn
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000);
 
-	let state = persisters[1].channel_watchtower_state.lock().unwrap();
-	println!("state: {:?}", state.get(&funding_txo).unwrap());
-	println!("starting_commitment_number: {:?}", starting_commitment_number);
-	let justice_tx = match state.get(&funding_txo).unwrap().get(&(starting_commitment_number - 1)).unwrap() {
-		WatchtowerState::JusticeTxFormed(justice_tx) => justice_tx,
-		_ => panic!("Expected justice tx to be formed!"),
+	let justice_tx = {
+		let state = persisters[1].channel_watchtower_state.lock().unwrap();
+		let tx = match state.get(&funding_txo).unwrap().get(&starting_commitment_number).unwrap() {
+			WatchtowerState::JusticeTxFormed(justice_tx) => justice_tx,
+			_ => panic!("Expected justice tx to be formed!"),
+		};
+		tx.clone()
 	};
-	return;
-	mine_transactions(&nodes[1], &[&revoked_local_txn[0], &justice_tx]);
-	// Check other stuff
+	check_spends!(justice_tx, revoked_local_txn[0]);
 
-	// COPIED OVER FROM PREVIOUS TEST
-	// Inform nodes[1] that nodes[0] broadcast a stale tx
-	mine_transaction(&nodes[1], &revoked_local_txn[0]);
+	mine_transactions(&nodes[1], &[&revoked_local_txn[0], &justice_tx]);
+	mine_transactions(&nodes[0], &[&revoked_local_txn[0], &justice_tx]);
+
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	assert_eq!(node_txn.len(), 1); // ChannelMonitor: justice tx against revoked to_local output
+	get_announce_close_broadcast_events(&nodes, 1, 0);
 
-	check_spends!(node_txn[0], revoked_local_txn[0]);
-
-	// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
-	mine_transaction(&nodes[0], &revoked_local_txn[0]);
-	get_announce_close_broadcast_events(&nodes, 0, 1);
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+
+	// Check that the justice tx has sent the revoked output value to nodes[1]
+	let monitor = get_monitor!(nodes[1], channel_id);
+	match monitor.get_claimable_balances()[0] {
+		channelmonitor::Balance::ClaimableAwaitingConfirmations { claimable_amount_satoshis, .. } => {
+			assert!(claimable_amount_satoshis >= 99_000);
+		},
+		_ => panic!("Unexpected balance type"),
+	}
 }
 
 
