@@ -284,11 +284,11 @@ impl HolderSignedTx {
 
 /// We use this to track static counterparty commitment transaction data and to generate any
 /// justice or 2nd-stage preimage/timeout transactions.
-#[derive(PartialEq, Eq)]
-struct CounterpartyCommitmentParameters {
-	counterparty_delayed_payment_base_key: PublicKey,
+#[derive(Clone, PartialEq, Eq)]
+pub struct CounterpartyCommitmentParameters {
+	pub counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
-	on_counterparty_tx_csv: u16,
+	pub on_counterparty_tx_csv: u16,
 }
 
 impl Writeable for CounterpartyCommitmentParameters {
@@ -1298,6 +1298,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// TODO: docs
 	pub fn get_channel_value_satoshis(&self) -> u64 {
 		self.inner.lock().unwrap().get_channel_value_satoshis()
+	}
+
+	/// TODO: docs
+	pub(crate) fn get_counterparty_commitment_params(&self) -> CounterpartyCommitmentParameters {
+		self.inner.lock().unwrap().get_counterparty_commitment_params()
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -2575,6 +2580,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	pub(crate) fn get_channel_value_satoshis(&self) -> u64 {
 		self.channel_value_satoshis
+	}
+
+	pub(crate) fn get_counterparty_commitment_params(&self) -> CounterpartyCommitmentParameters {
+		self.counterparty_commitment_params.clone()
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
