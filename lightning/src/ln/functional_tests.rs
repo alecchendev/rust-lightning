@@ -31,7 +31,7 @@ use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::test_utils;
+use crate::util::test_utils::{self, WatchtowerPersister, WatchtowerState};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
@@ -2537,6 +2537,64 @@ fn revoked_output_claim() {
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 }
+
+// Create a persister that just get's ChannelMonitor's justice_tx and stores it
+// Turn off channel monitor somehow? or just don't call block_connected to trigger automatic
+// broadcast of justice tx
+
+#[test]
+fn test_forming_justice_tx_from_monitor_updates() {
+	// Simple test to make sure that the justice tx fetched from ChannelMonitor during persistence
+	// is properly formed and can be broadcasted/confirmed successfully
+
+	// (Same as `revoked_output_claim` test but we get the justice tx + broadcast manually)
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let persisters = vec![
+		WatchtowerPersister::new(&chanmon_cfgs[0].persister, &chanmon_cfgs[0].keys_manager),
+		WatchtowerPersister::new(&chanmon_cfgs[1].persister, &chanmon_cfgs[1].keys_manager),
+	];
+	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, &persisters);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
+	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], channel_id);
+	assert_eq!(revoked_local_txn.len(), 1);
+	let starting_commitment_number = get_monitor!(nodes[0], channel_id).get_cur_holder_commitment_number();
+	// Only output is the full channel value back to nodes[0]:
+	assert_eq!(revoked_local_txn[0].output.len(), 1);
+	// Send a payment through, updating everyone's latest commitment txn
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000);
+
+	let state = persisters[1].channel_watchtower_state.lock().unwrap();
+	println!("state: {:?}", state.get(&funding_txo).unwrap());
+	println!("starting_commitment_number: {:?}", starting_commitment_number);
+	let justice_tx = match state.get(&funding_txo).unwrap().get(&(starting_commitment_number - 1)).unwrap() {
+		WatchtowerState::JusticeTxFormed(justice_tx) => justice_tx,
+		_ => panic!("Expected justice tx to be formed!"),
+	};
+	return;
+	mine_transactions(&nodes[1], &[&revoked_local_txn[0], &justice_tx]);
+	// Check other stuff
+
+	// COPIED OVER FROM PREVIOUS TEST
+	// Inform nodes[1] that nodes[0] broadcast a stale tx
+	mine_transaction(&nodes[1], &revoked_local_txn[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	assert_eq!(node_txn.len(), 1); // ChannelMonitor: justice tx against revoked to_local output
+
+	check_spends!(node_txn[0], revoked_local_txn[0]);
+
+	// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
+	mine_transaction(&nodes[0], &revoked_local_txn[0]);
+	get_announce_close_broadcast_events(&nodes, 0, 1);
+	check_added_monitors!(nodes[0], 1);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+}
+
 
 #[test]
 fn claim_htlc_outputs_shared_tx() {
