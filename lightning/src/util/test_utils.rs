@@ -40,7 +40,7 @@ use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar, All};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
@@ -281,18 +281,14 @@ pub enum WatchtowerState {
 }
 
 pub struct WatchtowerPersister<'a> {
-	pub secp_ctx: Secp256k1<All>,
 	pub persister: &'a TestPersister,
-	pub keys_manager: &'a TestKeysInterface,
 	pub channel_watchtower_state: Mutex<HashMap<OutPoint, HashMap<u64, WatchtowerState>>>,
 }
 
 impl<'a> WatchtowerPersister<'a> {
-	pub(crate) fn new(persister: &'a TestPersister, keys_manager: &'a TestKeysInterface) -> Self {
+	pub(crate) fn new(persister: &'a TestPersister) -> Self {
 		WatchtowerPersister {
-			secp_ctx: Secp256k1::new(),
 			persister,
-			keys_manager,
 			channel_watchtower_state: Mutex::new(HashMap::new()),
 		}
 	}
@@ -346,8 +342,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 						let mut channel_watchtower_state = self.channel_watchtower_state.lock().unwrap();
 						let justice_tx = match channel_watchtower_state.get(&funding_txo).unwrap().get(idx) {
 							Some(WatchtowerState::CounterpartyCommitmentTxSeen { commitment_txid, output_idx, value }) => {
-								let outpoint = OutPoint { txid: *commitment_txid, index: *output_idx as u16 };
-								data.build_and_sign_justice_tx(outpoint, *value, secret).expect("Should have no signing failure")
+								data.build_and_sign_justice_tx(*commitment_txid, *output_idx, *value, secret).expect("Should have no signing failure")
 							},
 							_ => { println!("Should only get a commitment secret after seeing a commitment tx except for the first tx"); break },
 						};
