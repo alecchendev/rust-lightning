@@ -1305,6 +1305,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_counterparty_commitment_params()
 	}
 
+	pub fn get_current_counterparty_commitment_txid(&self) -> Option<Txid> {
+		self.inner.lock().unwrap().get_current_counterparty_commitment_txid()
+	}
+
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
@@ -2584,6 +2588,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	pub(crate) fn get_counterparty_commitment_params(&self) -> CounterpartyCommitmentParameters {
 		self.counterparty_commitment_params.clone()
+	}
+
+	pub(crate) fn get_current_counterparty_commitment_txid(&self) -> Option<Txid> {
+		self.current_counterparty_commitment_txid
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
