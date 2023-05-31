@@ -265,7 +265,6 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 	}
 }
 
-#[derive(Debug)]
 pub enum WatchtowerState {
 	/// Upon a new commitment signed, we'll get a
 	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the commitment txid and
@@ -281,16 +280,16 @@ pub enum WatchtowerState {
 	JusticeTxFormed(Transaction),
 }
 
-pub struct WatchtowerPersister<'a> {
-	pub persister: &'a TestPersister,
+pub struct WatchtowerPersister {
+	pub persister: TestPersister,
 	pub destination_script: Script,
 	pub channel_watchtower_state: Mutex<HashMap<OutPoint, HashMap<u64, WatchtowerState>>>,
 }
 
-impl<'a> WatchtowerPersister<'a> {
-	pub(crate) fn new(persister: &'a TestPersister, destination_script: Script) -> Self {
+impl WatchtowerPersister {
+	pub(crate) fn new(destination_script: Script) -> Self {
 		WatchtowerPersister {
-			persister,
+			persister: TestPersister::new(),
 			destination_script,
 			channel_watchtower_state: Mutex::new(HashMap::new()),
 		}
@@ -341,7 +340,7 @@ impl<'a> WatchtowerPersister<'a> {
 	}
 }
 
-impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister<'_> {
+impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		assert!(self.channel_watchtower_state.lock().unwrap()
 			.insert(funding_txo, HashMap::new()).is_none());
