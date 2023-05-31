@@ -32,9 +32,7 @@ use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
-use bitcoin::EcdsaSighashType;
-use bitcoin::TxIn;
-use bitcoin::Witness;
+use bitcoin::{TxIn, Witness, EcdsaSighashType};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
