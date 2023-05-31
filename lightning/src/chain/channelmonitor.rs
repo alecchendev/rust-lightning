@@ -549,7 +549,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
-		(1, non_htlc_outputs, vec_type),
+		(1, non_htlc_outputs, optional_vec),
 		(2, commitment_number, required),
 		(4, their_per_commitment_point, required),
 		(6, htlc_outputs, vec_type),
