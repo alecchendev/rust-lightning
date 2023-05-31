@@ -2546,10 +2546,12 @@ fn test_forming_justice_tx_from_monitor_updates() {
 	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let persisters = vec![
-		WatchtowerPersister::new(&chanmon_cfgs[0].persister, chanmon_cfgs[0].keys_manager.get_destination_script().unwrap()),
-		WatchtowerPersister::new(&chanmon_cfgs[1].persister, chanmon_cfgs[1].keys_manager.get_destination_script().unwrap()),
+		WatchtowerPersister::new(&chanmon_cfgs[0].persister,
+			chanmon_cfgs[0].keys_manager.get_destination_script().unwrap()),
+		WatchtowerPersister::new(&chanmon_cfgs[1].persister,
+			chanmon_cfgs[1].keys_manager.get_destination_script().unwrap()),
 	];
-	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, &persisters);
+	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
