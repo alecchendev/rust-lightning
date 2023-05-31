@@ -305,7 +305,7 @@ impl WatchtowerPersister {
 					vout: output_idx,
 				},
 				script_sig: Script::new(),
-				sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 				witness: Witness::new(),
 			}],
 			output: vec![TxOut {
@@ -313,8 +313,10 @@ impl WatchtowerPersister {
 				value,
 			}],
 		};
-		let min_fee = (justice_tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-		justice_tx.output[0].value -= min_fee * 2; // arbitrary, temp
+		let min_fee = (justice_tx.weight() as u64 + 3) / 4;
+		// Once the value for the first commitment tx is accurate, we should be able to just use
+		// min_fee. For now, min_fee * 2 is a safe overestimate.
+		justice_tx.output[0].value -= min_fee * 2;
 		justice_tx
 	}
 
@@ -349,7 +351,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 		// so we get the same info and update the watchtower
 		let commitment_number = (1u64 << 48) - 1; // very first commitment number
 		let output_idx = 0;
-		let value = 99806; // fixed temporarily because I don't feel like finding funding tx weight
+		let value = 99806; // fixed temporarily because I don't feel like finding commitment tx weight; this might be harder than I thought...
 		let commitment_txid = data.get_current_counterparty_commitment_txid().expect("Should have at least one counterparty commitment tx");
 		assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
 			.insert(commitment_number, WatchtowerState::CounterpartyCommitmentTxSeen {
@@ -373,7 +375,10 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 						let (output_idx, output) = match non_htlc_outputs.iter().enumerate()
 							.find(|(_, output)| output.script_pubkey == revokeable_p2wsh) {
 								Some((idx, output)) => (idx, output),
-								None => { println!("Revoke script should match an output unless it's the very first commitment and the channel is outbound"); break; },
+								None => {
+									println!("No revokeable output found, must be the second commitment tx on an outbound channel.");
+									continue;
+								},
 							};
 
 						assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
@@ -391,7 +396,10 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 								let justice_tx = self.build_justice_tx(*commitment_txid, *output_idx, *value);
 								self.sign_justice_tx(justice_tx, secret, *value, data).expect("Should be able to sign justice tx")
 							},
-							_ => { println!("Should only get a commitment secret after seeing a commitment tx except for the first tx"); break },
+							_ => {
+								println!("No CounterpartyCommitmentTxSeen found, must be the second commitment tx on an outbound channel. No revokeable output.");
+								continue;
+							},
 						};
 
 						channel_watchtower_state.get_mut(&funding_txo).unwrap()
@@ -402,6 +410,7 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 				}
 			}
 		}
+
 		self.persister.update_persisted_channel(funding_txo, update, data, update_id)
 	}
 }
