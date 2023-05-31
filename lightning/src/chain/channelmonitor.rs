@@ -284,7 +284,7 @@ impl HolderSignedTx {
 
 /// We use this to track static counterparty commitment transaction data and to generate any
 /// justice or 2nd-stage preimage/timeout transactions.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct CounterpartyCommitmentParameters {
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
