@@ -751,6 +751,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 
 	on_holder_tx_csv: u16,
 
+	initial_to_counterparty_value: u64,
+
 	commitment_secrets: CounterpartyCommitmentSecrets,
 	/// The set of outpoints in each counterparty commitment transaction. We always need at least
 	/// the payment hash from `HTLCOutputInCommitment` to claim even a revoked commitment
@@ -927,6 +929,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 		self.counterparty_commitment_params.write(writer)?;
 		self.funding_redeemscript.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
+		self.initial_to_counterparty_value.write(writer)?;
 
 		match self.their_cur_per_commitment_points {
 			Some((idx, pubkey, second_option)) => {
@@ -1087,6 +1090,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		let channel_keys_id = keys.channel_keys_id();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
+		let initial_to_counterparty_value = initial_holder_commitment_tx.to_countersignatory_value_sat();
 
 		// block for Rust 1.34 compat
 		let (holder_commitment_tx, current_holder_commitment_number) = {
@@ -1136,6 +1140,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			their_cur_per_commitment_points: None,
 
 			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
+
+			initial_to_counterparty_value,
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			counterparty_claimable_outpoints: HashMap::new(),
@@ -1308,6 +1314,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// TODO: docs
 	pub fn is_outbound(&self) -> bool {
 		self.inner.lock().unwrap().is_outbound()
+	}
+
+	/// TODO: docs
+	pub fn initial_to_counterparty_value(&self) -> u64 {
+		self.inner.lock().unwrap().initial_to_counterparty_value()
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -2595,6 +2606,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	pub(crate) fn is_outbound(&self) -> bool {
 		self.onchain_tx_handler.channel_transaction_parameters.is_outbound_from_holder
+	}
+
+	pub(crate) fn initial_to_counterparty_value(&self) -> u64 {
+		self.initial_to_counterparty_value
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
@@ -3891,6 +3906,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let counterparty_commitment_params = Readable::read(reader)?;
 		let funding_redeemscript = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
+		let initial_to_counterparty_value = Readable::read(reader)?;
 
 		let their_cur_per_commitment_points = {
 			let first_idx = <U48 as Readable>::read(reader)?.0;
@@ -4090,6 +4106,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			their_cur_per_commitment_points,
 
 			on_holder_tx_csv,
+
+			initial_to_counterparty_value,
 
 			commitment_secrets,
 			counterparty_claimable_outpoints,
