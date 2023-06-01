@@ -3574,13 +3574,13 @@ where
 													purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
 												}
 											});
-										if !self.default_configuration.accept_mpp_keysend && is_keysend && !claimable_payment.htlcs.is_empty() {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash and our config states we don't accept MPP keysend", log_bytes!(payment_hash.0));
-											fail_htlc!(claimable_htlc, payment_hash);
-										}
 										if $purpose != claimable_payment.purpose {
 											let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
 											log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), log_bytes!(payment_hash.0), log_keysend(!is_keysend));
+											fail_htlc!(claimable_htlc, payment_hash);
+										}
+										if !self.default_configuration.accept_mpp_keysend && is_keysend && !claimable_payment.htlcs.is_empty() {
+											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash and our config states we don't accept MPP keysend", log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
 										}
 										if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
