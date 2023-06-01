@@ -8713,9 +8713,11 @@ mod tests {
 	fn test_keysend_msg_with_secret_err() {
 		// Test that we error as expected if we receive a keysend payment that includes a payment
 		// secret when we don't support MPP keysend.
+		let mut reject_mpp_keysend_cfg = test_default_channel_config();
+		reject_mpp_keysend_cfg.accept_mpp_keysend = false;
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(reject_mpp_keysend_cfg)]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
