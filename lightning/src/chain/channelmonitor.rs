@@ -2744,10 +2744,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let trusted_commitment_tx = commitment_tx.trust();
 					let commitment_txid = trusted_commitment_tx.txid();
 					let commitment_outputs = &trusted_commitment_tx.built_transaction().transaction.output;
-					let vout = self.find_revokeable_output(&commitment_outputs, &their_per_commitment_point)?;
-					let value = commitment_outputs[vout].value;
+					let output_idx = self.find_revokeable_output(&commitment_outputs, &their_per_commitment_point)?;
+					let value = commitment_outputs[output_idx].value;
 
-					Some((*commitment_number, commitment_txid, vout, value))
+					Some(RevokeableOutputData {
+						commitment_number: *commitment_number,
+						commitment_txid,
+						output_idx,
+						value,
+					})
 				},
 				_ => None,
 			}

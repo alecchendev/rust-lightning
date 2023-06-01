@@ -11,10 +11,13 @@ use crate::chain;
 use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
+use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
 use crate::chain::chainmonitor::MonitorUpdateId;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
+use crate::chain::channelmonitor::RevokeableOutputData;
+use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::chain::transaction::OutPoint;
 use crate::sign;
 use crate::events;
@@ -262,6 +265,78 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+}
+
+pub(crate) struct WatchtowerPersister {
+	persister: TestPersister,
+	/// Upon a new commitment signed, we'll get a
+	/// ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo. We'll store the commitment txid
+	/// and revokeable output index and value to use to form the justice tx once we get a
+	/// revoke_and_ack with the commitment secret.
+	revokeable_output_data: Mutex<HashMap<OutPoint, VecDeque<RevokeableOutputData>>>,
+	/// After receiving a revoke_and_ack for a commitment number, we'll form and store the justice
+	/// tx which would be used to provide a watchtower with the data it needs.
+	watchtower_state: Mutex<HashMap<OutPoint, HashMap<Txid, Transaction>>>,
+}
+
+impl WatchtowerPersister {
+	pub(crate) fn new() -> Self {
+		WatchtowerPersister {
+			persister: TestPersister::new(),
+			revokeable_output_data: Mutex::new(HashMap::new()),
+			watchtower_state: Mutex::new(HashMap::new()),
+		}
+	}
+
+	pub(crate) fn justice_tx(&self, funding_txo: OutPoint, commitment_txid: &Txid) -> Option<Transaction> {
+		self.watchtower_state.lock().unwrap().get(&funding_txo).unwrap().get(commitment_txid).cloned()
+	}
+}
+
+impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
+	fn persist_new_channel(&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+		assert!(self.revokeable_output_data.lock().unwrap()
+			.insert(funding_txo, VecDeque::new()).is_none());
+		assert!(self.watchtower_state.lock().unwrap()
+			.insert(funding_txo, HashMap::new()).is_none());
+		self.persister.persist_new_channel(funding_txo, data, id)
+		// TODO: accomodate for first channel update
+	}
+
+	fn update_persisted_channel(&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>, data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+		if let Some(update) = update {
+			// Track new counterparty commitment txs
+			let revokeable_output_data = data.revokeable_output_data_from_update(update);
+			let mut channels_revokeable_output_data = self.revokeable_output_data.lock().unwrap();
+			let channel_state = channels_revokeable_output_data.get_mut(&funding_txo).unwrap();
+			channel_state.extend(revokeable_output_data.into_iter());
+
+			// Form justice txs for revoked counterparty commitment txs
+			while let Some(RevokeableOutputData { commitment_number, commitment_txid, output_idx, value }) = channel_state.front() {
+				let mut justice_tx = data.build_justice_tx(*commitment_txid, *output_idx as u32, *value);
+
+				// Fee estimation
+				let weight = justice_tx.weight() as u64 + WEIGHT_REVOKED_OUTPUT;
+				let min_feerate_per_kw = FEERATE_FLOOR_SATS_PER_KW;
+				let fee = min_feerate_per_kw as u64 * weight / 1000;
+				justice_tx.output[0].value -= fee;
+
+				// Sign justice tx
+				let input_idx = 0;
+				match data.sign_justice_tx(justice_tx, input_idx, *value, *commitment_number) {
+					Ok(signed_justice_tx) => {
+						let dup = self.watchtower_state.lock().unwrap()
+							.get_mut(&funding_txo).unwrap()
+							.insert(*commitment_txid, signed_justice_tx);
+						assert!(dup.is_none());
+						channel_state.pop_front();
+					},
+					Err(_) => break,
+				}
+			}
+		}
+		self.persister.update_persisted_channel(funding_txo, update, data, update_id)
 	}
 }
 
