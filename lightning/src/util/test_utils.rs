@@ -314,9 +314,7 @@ impl WatchtowerPersister {
 			}],
 		};
 		let min_fee = (justice_tx.weight() as u64 + 3) / 4;
-		// Once the value for the first commitment tx is accurate, we should be able to just use
-		// min_fee. For now, min_fee * 2 is a safe overestimate.
-		justice_tx.output[0].value -= min_fee * 2;
+		justice_tx.output[0].value -= min_fee * 2; // Overestimating for when witness is added
 		justice_tx
 	}
 
@@ -349,16 +347,18 @@ impl<Signer: sign::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> fo
 
 		// No ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTxInfo is persisted on channel creation
 		// so we get the same info and update the watchtower
-		let commitment_number = (1u64 << 48) - 1; // very first commitment number
+		let commitment_number = (1u64 << 48) - 1;
 		let output_idx = 0;
-		let value = 99806; // fixed temporarily because I don't feel like finding commitment tx weight; this might be harder than I thought...
 		let commitment_txid = data.get_current_counterparty_commitment_txid().expect("Should have at least one counterparty commitment tx");
-		assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
-			.insert(commitment_number, WatchtowerState::CounterpartyCommitmentTxSeen {
-				commitment_txid,
-				output_idx,
-				value,
-			}).is_none());
+		let value = data.initial_to_counterparty_value();
+		if value != 0 {
+			assert!(self.channel_watchtower_state.lock().unwrap().get_mut(&funding_txo).unwrap()
+				.insert(commitment_number, WatchtowerState::CounterpartyCommitmentTxSeen {
+					commitment_txid,
+					output_idx,
+					value,
+				}).is_none());
+		}
 
 		self.persister.persist_new_channel(funding_txo, data, id)
 	}
