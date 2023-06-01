@@ -31,7 +31,7 @@ use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::test_utils;
+use crate::util::test_utils::{self, WatchtowerPersister};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::string::UntrustedString;
@@ -2539,6 +2539,57 @@ fn revoked_output_claim() {
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 }
+
+#[test]
+fn test_forming_justice_tx_from_monitor_updates() {
+	// Simple test to make sure that the justice tx formed in WatchtowerPersister
+	// is properly formed and can be broadcasted/confirmed successfully in the event
+	// that a revoked commitment transaction is broadcasted
+	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let persisters = vec![WatchtowerPersister::new(), WatchtowerPersister::new()];
+	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
+
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000);
+
+	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output.
+	// We'll keep this commitment transaction to broadcast once it's revoked.
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], channel_id);
+	assert_eq!(revoked_local_txn.len(), 1);
+	let revoked_commitment_tx = &revoked_local_txn[0];
+
+	// Send another payment, now revoking the previous commitment tx
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000);
+
+	let justice_tx = persisters[1].justice_tx(funding_txo, &revoked_commitment_tx.txid()).unwrap();
+	check_spends!(justice_tx, revoked_commitment_tx);
+
+	mine_transactions(&nodes[1], &[revoked_commitment_tx, &justice_tx]);
+	mine_transactions(&nodes[0], &[revoked_commitment_tx, &justice_tx]);
+
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	get_announce_close_broadcast_events(&nodes, 1, 0);
+
+	check_added_monitors!(nodes[0], 1);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+
+	// Check that the justice tx has sent the revoked output value to nodes[1]
+	let monitor = get_monitor!(nodes[1], channel_id);
+	let total_claimable_balance = monitor.get_claimable_balances().iter().fold(0, |sum, balance| {
+		match balance {
+			channelmonitor::Balance::ClaimableAwaitingConfirmations { claimable_amount_satoshis, .. } => sum + claimable_amount_satoshis,
+			_ => panic!("Unexpected balance type"),
+		}
+	});
+	let expected_claimable_balance = revoked_commitment_tx.output[0].value + justice_tx.output[0].value;
+	assert!(total_claimable_balance == expected_claimable_balance);
+}
+
 
 #[test]
 fn claim_htlc_outputs_shared_tx() {
