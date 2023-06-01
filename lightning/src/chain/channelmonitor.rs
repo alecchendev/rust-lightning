@@ -1305,6 +1305,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_current_counterparty_commitment_txid()
 	}
 
+	/// TODO: docs
+	pub fn is_outbound(&self) -> bool {
+		self.inner.lock().unwrap().is_outbound()
+	}
+
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
@@ -2586,6 +2591,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	pub(crate) fn get_current_counterparty_commitment_txid(&self) -> Option<Txid> {
 		self.current_counterparty_commitment_txid
+	}
+
+	pub(crate) fn is_outbound(&self) -> bool {
+		self.onchain_tx_handler.channel_transaction_parameters.is_outbound_from_holder
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
