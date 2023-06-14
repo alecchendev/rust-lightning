@@ -6121,7 +6121,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let (counterparty_commitment_txid, mut htlcs_ref) = self.build_commitment_no_state_update(logger);
+		let (counterparty_commitment_txid, mut htlcs_ref, counterparty_commitment_tx) = self.build_commitment_no_state_update(logger);
 		let htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
 			htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
 
@@ -6138,16 +6138,19 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				commitment_number: self.cur_counterparty_commitment_transaction_number,
 				their_per_commitment_point: self.counterparty_cur_commitment_point.unwrap(),
 				feerate_per_kw: Some(self.feerate_per_kw),
+				to_broadcaster_value: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
+				to_countersignatory_value: Some(counterparty_commitment_tx.to_countersignatory_value_sat())
 			}]
 		};
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 		monitor_update
 	}
 
-	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction) where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys();
 		let commitment_stats = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
-		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
+		let counterparty_commitment_tx = commitment_stats.tx;
+		let counterparty_commitment_txid = counterparty_commitment_tx.trust().txid();
 
 		#[cfg(any(test, fuzzing))]
 		{
@@ -6167,7 +6170,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		(counterparty_commitment_txid, commitment_stats.htlcs_included)
+		(counterparty_commitment_txid, commitment_stats.htlcs_included, counterparty_commitment_tx)
 	}
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
