@@ -21,7 +21,7 @@
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
+use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxIn, TxOut, Transaction};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 
@@ -31,12 +31,12 @@ use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, Sequence, Witness, EcdsaSighashType};
 
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::chan_utils;
-use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
+use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, CommitmentTransaction, TxCreationKeys};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
@@ -46,7 +46,7 @@ use crate::sign::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, Dela
 #[cfg(anchors)]
 use crate::chain::onchaintx::ClaimEvent;
 use crate::chain::onchaintx::OnchainTxHandler;
-use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
+use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput, WEIGHT_REVOKED_OUTPUT};
 use crate::chain::Filter;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
@@ -1328,6 +1328,16 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
 	}
 
+	/// TODO: docs
+	pub fn sign_revokeable_output_claim(&self, counterparty_commitment_tx: &CommitmentTransaction, feerate_per_kw: u32) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().sign_revokeable_output_claim(counterparty_commitment_tx, feerate_per_kw)
+	}
+
+	/// TODO: docs
+	pub fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		self.inner.lock().unwrap().counterparty_commitment_txs_from_update(update)
+	}
+
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.inner.lock().unwrap().get_min_seen_secret()
 	}
@@ -2597,6 +2607,70 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		ret
 	}
 
+	pub(crate) fn sign_revokeable_output_claim(&self, counterparty_commitment_tx: &CommitmentTransaction, feerate_per_kw: u32) -> Result<Transaction, ()> {
+		// Can't sign if our counterparty hasn't revoked this commitment transaction yet!
+		if counterparty_commitment_tx.commitment_number() < self.get_min_seen_secret() {
+			return Err(());
+		}
+
+		// Per commitment data
+		let secret = self.get_secret(counterparty_commitment_tx.commitment_number()).ok_or(())?;
+		let per_commitment_key = SecretKey::from_slice(&secret).map_err(|_| ())?;
+		let their_per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+
+		// Get revokeable redeemscript
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &their_per_commitment_point, &self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &their_per_commitment_point, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+		let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
+
+		// Get revokeable output
+		let trusted_commitment_tx = counterparty_commitment_tx.trust();
+		let commitment_outputs = &trusted_commitment_tx.built_transaction().transaction.output;
+		let (vout, revokeable_output) = commitment_outputs.iter().enumerate().find(|(_, out)| out.script_pubkey == revokeable_redeemscript).ok_or(())?;
+		let commitment_txid = trusted_commitment_tx.txid();
+
+		// Build tx
+		let input = vec![TxIn {
+				previous_output: bitcoin::OutPoint {
+					txid: commitment_txid,
+					vout: vout as u32,
+				},
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Witness::new(),
+		}];
+		let output = vec![TxOut {
+			script_pubkey: self.destination_script.clone(),
+			value: revokeable_output.value,
+		}];
+		let mut justice_tx = Transaction {
+			version: 2,
+			lock_time: bitcoin::PackedLockTime::ZERO,
+			input,
+			output,
+		};
+
+		// Fee estimation
+		let predicted_weight = justice_tx.weight() as u64 + WEIGHT_REVOKED_OUTPUT;
+		let fee = feerate_per_kw as u64 * predicted_weight as u64 / 1000;
+		justice_tx.output[0].value = match justice_tx.output[0].value.checked_sub(fee) {
+			None => return Err(()),
+			Some(val) if val < self.destination_script.dust_value().to_sat() => return Err(()),
+			Some(val) => val,
+		};
+
+		// Sign
+		let input_idx = 0;
+		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(&justice_tx, input_idx, justice_tx.output[0].value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)?;
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[0].witness.push(ser_sig);
+		justice_tx.input[0].witness.push(vec!(1));
+		justice_tx.input[0].witness.push(revokeable_redeemscript.clone().into_bytes());
+
+		Ok(justice_tx)
+	}
+
 	fn build_counterparty_commitment_tx(&self, commitment_number: u64, their_per_commitment_point: &PublicKey, to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>) -> CommitmentTransaction {
 
 		let broadcaster_keys = &self.onchain_tx_handler.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys;
@@ -2610,6 +2684,24 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let channel_parameters = &self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
 
 		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number, to_broadcaster_value, to_countersignatory_value, opt_anchors, broadcaster_funding_key, countersignatory_funding_key, keys, feerate_per_kw, &mut htlcs_with_aux, channel_parameters)
+	}
+
+	pub(crate) fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
+		update.updates.iter().filter_map(|update| {
+			match update {
+				&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid: _,
+					ref htlc_outputs, commitment_number, their_per_commitment_point,
+					feerate_per_kw: Some(feerate_per_kw),
+					to_broadcaster_value: Some(to_broadcaster_value),
+					to_countersignatory_value: Some(to_countersignatory_value) } => {
+
+					let commitment_tx = self.build_counterparty_commitment_tx(commitment_number, &their_per_commitment_point, to_broadcaster_value, to_countersignatory_value, feerate_per_kw, htlc_outputs.clone());
+
+					Some(commitment_tx)
+				},
+				_ => None,
+			}
+		}).collect()
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
