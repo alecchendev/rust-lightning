@@ -6136,7 +6136,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				commitment_txid: counterparty_commitment_txid,
 				htlc_outputs: htlcs.clone(),
 				commitment_number: self.cur_counterparty_commitment_transaction_number,
-				their_per_commitment_point: self.counterparty_cur_commitment_point.unwrap()
+				their_per_commitment_point: self.counterparty_cur_commitment_point.unwrap(),
+				feerate_per_kw: Some(self.feerate_per_kw),
 			}]
 		};
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
