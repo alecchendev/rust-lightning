@@ -2597,6 +2597,21 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		ret
 	}
 
+	fn build_counterparty_commitment_tx(&self, commitment_number: u64, their_per_commitment_point: &PublicKey, to_broadcaster_value: u64, to_countersignatory_value: u64, feerate_per_kw: u32, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>) -> CommitmentTransaction {
+
+		let broadcaster_keys = &self.onchain_tx_handler.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys;
+		let countersignatory_keys = &self.onchain_tx_handler.channel_transaction_parameters.holder_pubkeys;
+
+		let opt_anchors = self.onchain_tx_handler.opt_anchors();
+		let broadcaster_funding_key = broadcaster_keys.funding_pubkey;
+		let countersignatory_funding_key = countersignatory_keys.funding_pubkey;
+		let keys = TxCreationKeys::from_channel_static_keys(&their_per_commitment_point, &broadcaster_keys, &countersignatory_keys, &self.onchain_tx_handler.secp_ctx);
+		let mut htlcs_with_aux = htlc_outputs.clone();
+		let channel_parameters = &self.onchain_tx_handler.channel_transaction_parameters.as_counterparty_broadcastable();
+
+		CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number, to_broadcaster_value, to_countersignatory_value, opt_anchors, broadcaster_funding_key, countersignatory_funding_key, keys, feerate_per_kw, &mut htlcs_with_aux, channel_parameters)
+	}
+
 	/// Can only fail if idx is < get_min_seen_secret
 	fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		self.commitment_secrets.get_secret(idx)
