@@ -742,6 +742,18 @@ impl Readable for IrrevocablyResolvedHTLC {
 	}
 }
 
+/// TODO: docs
+pub struct RevokeableOutputData {
+	/// TODO: docs
+	pub commitment_number: u64,
+	/// TODO: docs
+	pub commitment_txid: Txid,
+	/// TODO: docs
+	pub output_idx: usize,
+	/// TODO: docs
+	pub value: u64,
+}
+
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
 ///
@@ -1336,6 +1348,21 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// TODO: docs
 	pub fn counterparty_commitment_txs_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<CommitmentTransaction> {
 		self.inner.lock().unwrap().counterparty_commitment_txs_from_update(update)
+	}
+
+	/// TODO: docs
+	pub fn revokeable_output_data_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<RevokeableOutputData> {
+		self.inner.lock().unwrap().revokeable_output_data_from_update(update)
+	}
+
+	/// TODO: docs
+	pub fn build_justice_tx(&self, counterparty_commitment_txid: Txid, vout: u32, value: u64) -> Transaction {
+		self.inner.lock().unwrap().build_justice_tx(counterparty_commitment_txid, vout, value)
+	}
+
+	/// TODO: docs
+	pub fn sign_justice_tx(&self, justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64) -> Result<Transaction, ()> {
+		self.inner.lock().unwrap().sign_justice_tx(justice_tx, input_idx, value, commitment_number)
 	}
 
 	pub(crate) fn get_min_seen_secret(&self) -> u64 {
@@ -2702,6 +2729,78 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				_ => None,
 			}
 		}).collect()
+	}
+
+	pub(crate) fn revokeable_output_data_from_update(&self, update: &ChannelMonitorUpdate) -> Vec<RevokeableOutputData> {
+		update.updates.iter().filter_map(|update| {
+			match update {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid: _,
+					htlc_outputs, commitment_number, their_per_commitment_point,
+					feerate_per_kw: Some(feerate_per_kw),
+					to_broadcaster_value: Some(to_broadcaster_value),
+					to_countersignatory_value: Some(to_countersignatory_value) } => {
+
+					let commitment_tx = self.build_counterparty_commitment_tx(*commitment_number, &their_per_commitment_point, *to_broadcaster_value, *to_countersignatory_value, *feerate_per_kw, htlc_outputs.clone());
+					let trusted_commitment_tx = commitment_tx.trust();
+					let commitment_txid = trusted_commitment_tx.txid();
+					let commitment_outputs = &trusted_commitment_tx.built_transaction().transaction.output;
+					let vout = self.find_revokeable_output(&commitment_outputs, &their_per_commitment_point)?;
+					let value = commitment_outputs[vout].value;
+
+					Some((*commitment_number, commitment_txid, vout, value))
+				},
+				_ => None,
+			}
+		}).collect()
+	}
+
+	fn revokeable_redeemscript(&self, their_per_commitment_point: &PublicKey) -> Script {
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &their_per_commitment_point, &self.holder_revocation_basepoint);
+		let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &their_per_commitment_point, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+		chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key)
+	}
+
+	fn find_revokeable_output(&self, counterparty_commitment_outputs: &[TxOut], their_per_commitment_point: &PublicKey) -> Option<usize> {
+		let revokeable_redeemscript = self.revokeable_redeemscript(&their_per_commitment_point);
+		let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
+		counterparty_commitment_outputs.iter().enumerate().find(|(_, out)| out.script_pubkey == revokeable_p2wsh).map(|(idx, _)| idx)
+	}
+
+	pub(crate) fn build_justice_tx(&self, counterparty_commitment_txid: Txid, vout: u32, value: u64) -> Transaction {
+		let input = vec![TxIn {
+				previous_output: bitcoin::OutPoint {
+					txid: counterparty_commitment_txid,
+					vout,
+				},
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Witness::new(),
+		}];
+		let output = vec![TxOut {
+			script_pubkey: self.destination_script.clone(),
+			value,
+		}];
+		Transaction {
+			version: 2,
+			lock_time: bitcoin::PackedLockTime::ZERO,
+			input,
+			output,
+		}
+	}
+
+	pub(crate) fn sign_justice_tx(&self, mut justice_tx: Transaction, input_idx: usize, value: u64, commitment_number: u64) -> Result<Transaction, ()> {
+		let secret = self.get_secret(commitment_number).ok_or(())?;
+		let per_commitment_key = SecretKey::from_slice(&secret).map_err(|_| ())?;
+		let their_per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+		let revokeable_redeemscript = self.revokeable_redeemscript(&their_per_commitment_point);
+
+		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)?;
+		let mut ser_sig = sig.serialize_der().to_vec();
+		ser_sig.push(EcdsaSighashType::All as u8);
+		justice_tx.input[input_idx].witness.push(ser_sig);
+		justice_tx.input[input_idx].witness.push(vec!(1));
+		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.clone().into_bytes());
+		Ok(justice_tx)
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
