@@ -2564,7 +2564,12 @@ pub fn test_default_channel_config() -> UserConfig {
 	default_config.channel_handshake_config.our_htlc_minimum_msat = 1000;
 	// When most of our tests were written, we didn't have the notion of a `max_dust_htlc_exposure_msat`,
 	// It now defaults to 5_000_000 msat; to avoid interfering with tests we bump it to 50_000_000 msat.
+	// This is less relevant now as it's overriden by max_dust_htlc_exposure_multiplier_thousandths
+	// by default.
 	default_config.channel_config.max_dust_htlc_exposure_msat = 50_000_000;
+	// Similarly to the previous threshold, this was added after most of our tests were written, so
+	// we bump the default value to avoid interference.
+	default_config.channel_config.max_dust_htlc_exposure_multiplier_thousandths = Some(50_000_000 / 253);
 	default_config
 }
 
