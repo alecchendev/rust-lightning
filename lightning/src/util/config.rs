@@ -429,6 +429,21 @@ pub struct ChannelConfig {
 	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: crate::events::Event::PaymentClaimable::counterparty_skimmed_fee_msat
 	//  TODO: link to bLIP when it's merged
 	pub accept_underpaying_htlcs: bool,
+	/// Similar to [`Self::max_dust_htlc_exposure_msat`], but instead of setting a fixed maximum,
+	/// this sets a multiplier on the estimated high priority feerate (sats/KW, as obtained from
+	/// [`FeeEstimator`]) to determine the maximum allowed dust exposure. If this field is set to
+	/// `Some(value)`, then the maximum dust exposure in sats is calculated as:
+	/// `high_priority_feerate_per_kw * value / 1000`.
+	///
+	/// This allows the maximum dust exposure to automatically scale with fee rate changes. With
+	/// a fixed maximum, if the feerate increases significantly, then without a manually increase
+	/// to this maximum, the channel may be unable to send/receive HTLCs between the maximum dust
+	/// exposure and the new minimum value for HTLCs to be economically viable to claim.
+	///
+	/// Default value: `Some(5000)`.
+	///
+	/// [`FeeEstimator`]: crate::chain::chaininterface::FeeEstimator
+	pub max_dust_htlc_exposure_multiplier_thousandths: Option<u64>,
 }
 
 impl ChannelConfig {
@@ -449,6 +464,9 @@ impl ChannelConfig {
 		if let Some(force_close_avoidance_max_fee_satoshis) = update.force_close_avoidance_max_fee_satoshis {
 			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
 		}
+		if let Some(max_dust_htlc_exposure_multiplier_thousandths) = update.max_dust_htlc_exposure_multiplier_thousandths {
+			self.max_dust_htlc_exposure_multiplier_thousandths = max_dust_htlc_exposure_multiplier_thousandths;
+		}
 	}
 }
 
@@ -462,6 +480,7 @@ impl Default for ChannelConfig {
 			max_dust_htlc_exposure_msat: 5_000_000,
 			force_close_avoidance_max_fee_satoshis: 1000,
 			accept_underpaying_htlcs: false,
+			max_dust_htlc_exposure_multiplier_thousandths: Some(5000),
 		}
 	}
 }
@@ -476,6 +495,7 @@ impl_writeable_tlv_based!(ChannelConfig, {
 	// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
 	// the next required type of 10, which if seen by the old serialization will always fail.
 	(10, force_close_avoidance_max_fee_satoshis, required),
+	(12, max_dust_htlc_exposure_multiplier_thousandths, required)
 });
 
 /// A parallel struct to [`ChannelConfig`] to define partial updates.
@@ -486,6 +506,7 @@ pub struct ChannelConfigUpdate {
 	pub cltv_expiry_delta: Option<u16>,
 	pub max_dust_htlc_exposure_msat: Option<u64>,
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
+	pub max_dust_htlc_exposure_multiplier_thousandths: Option<Option<u64>>,
 }
 
 impl Default for ChannelConfigUpdate {
@@ -496,6 +517,7 @@ impl Default for ChannelConfigUpdate {
 			cltv_expiry_delta: None,
 			max_dust_htlc_exposure_msat: None,
 			force_close_avoidance_max_fee_satoshis: None,
+			max_dust_htlc_exposure_multiplier_thousandths: None,
 		}
 	}
 }
@@ -508,6 +530,7 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 			cltv_expiry_delta: Some(config.cltv_expiry_delta),
 			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure_msat),
 			force_close_avoidance_max_fee_satoshis: Some(config.force_close_avoidance_max_fee_satoshis),
+			max_dust_htlc_exposure_multiplier_thousandths: Some(config.max_dust_htlc_exposure_multiplier_thousandths),
 		}
 	}
 }
@@ -547,6 +570,7 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 			(4, self.announced_channel, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
 			(8, self.options.forwarding_fee_base_msat, required),
+			(10, self.options.max_dust_htlc_exposure_multiplier_thousandths, option),
 		});
 		Ok(())
 	}
@@ -561,6 +585,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		let mut announced_channel = false;
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
+		let mut max_dust_htlc_exposure_multiplier_thousandths = None;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000u64)),
@@ -569,6 +594,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 			(4, announced_channel, required),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),
+			(10, max_dust_htlc_exposure_multiplier_thousandths, option),
 		});
 		Ok(Self {
 			options: ChannelConfig {
@@ -578,6 +604,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				force_close_avoidance_max_fee_satoshis,
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
+				max_dust_htlc_exposure_multiplier_thousandths,
 			},
 			announced_channel,
 			commit_upfront_shutdown_pubkey,
