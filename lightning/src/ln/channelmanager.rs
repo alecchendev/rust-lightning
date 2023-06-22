@@ -9887,6 +9887,7 @@ pub mod bench {
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();
+		config.channel_config.max_dust_htlc_exposure_multiplier_thousandths = Some(5_000_000 / 253);
 		config.channel_handshake_config.minimum_depth = 1;
 
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
