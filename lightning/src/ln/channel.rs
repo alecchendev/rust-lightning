@@ -6026,6 +6026,8 @@ pub(super) struct InboundV1Channel<Signer: ChannelSigner> {
 /// channel establishment. Once accepted, the parameters will be used
 /// to construct a channel.
 pub(super) struct UnacceptedInboundV1Channel {
+	/// The counterparty node id that initiated the channel open.
+	pub counterparty_node_id: PublicKey,
 	/// The original OpenChannel message.
 	pub open_channel_msg: msgs::OpenChannel,
 	/// The outbound SCID alias assigned to the channel when we received

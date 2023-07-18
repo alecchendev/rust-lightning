@@ -2564,6 +2564,15 @@ where
 				self.finish_force_close_channel(chan.context.force_shutdown(false));
 				// Unfunded channel has no update
 				(None, chan.context.get_counterparty_node_id())
+			} else if let Some(chan) = peer_state.unaccepted_inbound_v1_channel_by_id.remove(channel_id) {
+				log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
+				// N.B. that we don't send any channel close event here: we
+				// don't have a user_channel_id, and we never sent any opening
+				// events anyway.
+				self.id_to_peer.lock().unwrap().remove(channel_id);
+				self.outbound_scid_aliases.lock().unwrap().remove(&chan.outbound_scid_alias);
+				self.short_to_chan_info.write().unwrap().remove(&chan.outbound_scid_alias);
+				(None, chan.counterparty_node_id)
 			} else {
 				return Err(APIError::ChannelUnavailable{ err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), peer_node_id) });
 			}
@@ -5340,6 +5349,7 @@ where
 				channel_type: msg.channel_type.clone().unwrap(),
 			}, None));
 			peer_state.unaccepted_inbound_v1_channel_by_id.insert(channel_id, UnacceptedInboundV1Channel {
+				counterparty_node_id: *counterparty_node_id,
 				open_channel_msg: msg.clone(),
 				outbound_scid_alias: outbound_scid_alias,
 			});
