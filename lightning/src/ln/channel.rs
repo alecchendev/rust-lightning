@@ -6022,6 +6022,18 @@ pub(super) struct InboundV1Channel<Signer: ChannelSigner> {
 	pub unfunded_context: UnfundedChannelContext,
 }
 
+/// A not-yet-accepted inbound (from counterparty) channel using V1
+/// channel establishment. Once accepted, the parameters will be used
+/// to construct a channel.
+pub(super) struct UnacceptedInboundV1Channel {
+	/// The original OpenChannel message.
+	pub open_channel_msg: msgs::OpenChannel,
+	/// The outbound SCID alias assigned to the channel when we received
+	/// the OpenChannel request.
+	pub outbound_scid_alias: u64,
+}
+
+
 impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!

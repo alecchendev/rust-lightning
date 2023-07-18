@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel};
+use crate::ln::channel::{Channel, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, UnacceptedInboundV1Channel};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -635,6 +635,10 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// been assigned a `channel_id`, the entry in this map is removed and one is created in
 	/// `channel_by_id`.
 	pub(super) inbound_v1_channel_by_id: HashMap<[u8; 32], InboundV1Channel<Signer>>,
+	/// `temporary_channel_id` -> `UnacceptedInboundV1Channel`.
+	///
+	/// Holds all unaccepted inbound V1 channels where the peer is the counterparty.
+	pub(super) unaccepted_inbound_v1_channel_by_id: HashMap<[u8; 32], UnacceptedInboundV1Channel>,
 	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
 	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
@@ -689,7 +693,8 @@ impl <Signer: ChannelSigner> PeerState<Signer> {
 	fn total_channel_count(&self) -> usize {
 		self.channel_by_id.len() +
 			self.outbound_v1_channel_by_id.len() +
-			self.inbound_v1_channel_by_id.len()
+			self.inbound_v1_channel_by_id.len() +
+			self.unaccepted_inbound_v1_channel_by_id.len()
 	}
 
 	// Returns a bool indicating if the given `channel_id` matches a channel we have with this peer.
@@ -5174,49 +5179,54 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let is_only_peer_channel = peer_state.total_channel_count() == 1;
-		match peer_state.inbound_v1_channel_by_id.entry(temporary_channel_id.clone()) {
-			hash_map::Entry::Occupied(mut channel) => {
-				if !channel.get().is_awaiting_accept() {
-					return Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() });
-				}
-				if accept_0conf {
-					channel.get_mut().set_0conf();
-				} else if channel.get().context.get_channel_type().requires_zero_conf() {
-					let send_msg_err_event = events::MessageSendEvent::HandleError {
-						node_id: channel.get().context.get_counterparty_node_id(),
-						action: msgs::ErrorAction::SendErrorMessage{
-							msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
-						}
-					};
-					peer_state.pending_msg_events.push(send_msg_err_event);
-					let _ = remove_channel!(self, channel);
-					return Err(APIError::APIMisuseError { err: "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned() });
-				} else {
-					// If this peer already has some channels, a new channel won't increase our number of peers
-					// with unfunded channels, so as long as we aren't over the maximum number of unfunded
-					// channels per-peer we can accept channels from a peer with existing ones.
-					if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
-						let send_msg_err_event = events::MessageSendEvent::HandleError {
-							node_id: channel.get().context.get_counterparty_node_id(),
-							action: msgs::ErrorAction::SendErrorMessage{
-								msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
-							}
-						};
-						peer_state.pending_msg_events.push(send_msg_err_event);
-						let _ = remove_channel!(self, channel);
-						return Err(APIError::APIMisuseError { err: "Too many peers with unfunded channels, refusing to accept new ones".to_owned() });
-					}
-				}
 
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-					node_id: channel.get().context.get_counterparty_node_id(),
-					msg: channel.get_mut().accept_inbound_channel(user_channel_id),
-				});
+		// Find (and remove) the channel in the unaccepted table. If it's
+		// not there, something weird is happening and return an error.
+		let mut channel = match peer_state.unaccepted_inbound_v1_channel_by_id.remove(temporary_channel_id) {
+			Some(unaccepted_channel) => {
+				let best_block_height = self.best_block.read().unwrap().height();
+				InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
+					counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
+          &unaccepted_channel.open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
+					&self.logger, unaccepted_channel.outbound_scid_alias).map_err(|e| APIError::ChannelUnavailable { err: e.to_string() })
 			}
-			hash_map::Entry::Vacant(_) => {
-				return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) });
+			_ => Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) })
+		}?;
+
+		if accept_0conf {
+			channel.set_0conf();
+		} else if channel.context.get_channel_type().requires_zero_conf() {
+			let send_msg_err_event = events::MessageSendEvent::HandleError {
+				node_id: channel.context.get_counterparty_node_id(),
+				action: msgs::ErrorAction::SendErrorMessage{
+					msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
+				}
+			};
+			peer_state.pending_msg_events.push(send_msg_err_event);
+			return Err(APIError::APIMisuseError { err: "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned() });
+		} else {
+			// If this peer already has some channels, a new channel won't increase our number of peers
+			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
+			// channels per-peer we can accept channels from a peer with existing ones.
+			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
+				let send_msg_err_event = events::MessageSendEvent::HandleError {
+					node_id: channel.context.get_counterparty_node_id(),
+					action: msgs::ErrorAction::SendErrorMessage{
+						msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
+					}
+				};
+				peer_state.pending_msg_events.push(send_msg_err_event);
+				return Err(APIError::APIMisuseError { err: "Too many peers with unfunded channels, refusing to accept new ones".to_owned() });
 			}
 		}
+
+		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+			node_id: channel.context.get_counterparty_node_id(),
+			msg: channel.accept_inbound_channel(user_channel_id),
+		});
+		
+		peer_state.inbound_v1_channel_by_id.insert(temporary_channel_id.clone(), channel);
+		
 		Ok(())
 	}
 
@@ -5261,7 +5271,7 @@ where
 				num_unfunded_channels += 1;
 			}
 		}
-		num_unfunded_channels
+		num_unfunded_channels + peer.unaccepted_inbound_v1_channel_by_id.len()
 	}
 
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
@@ -5312,6 +5322,31 @@ where
 				msg.temporary_channel_id.clone()));
 		}
 
+		let channel_id = msg.temporary_channel_id;
+		let channel_exists = peer_state.has_channel(&channel_id);
+		if channel_exists {
+			self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision for the same peer!".to_owned(), msg.temporary_channel_id.clone()));
+		}
+
+		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
+		if self.default_configuration.manually_accept_inbound_channels {
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push_back((events::Event::OpenChannelRequest {
+				temporary_channel_id: msg.temporary_channel_id.clone(),
+				counterparty_node_id: counterparty_node_id.clone(),
+				funding_satoshis: msg.funding_satoshis,
+				push_msat: msg.push_msat,
+				channel_type: msg.channel_type.clone().unwrap(),
+			}, None));
+			peer_state.unaccepted_inbound_v1_channel_by_id.insert(channel_id, UnacceptedInboundV1Channel {
+				open_channel_msg: msg.clone(),
+				outbound_scid_alias: outbound_scid_alias,
+			});
+			return Ok(());
+		}
+
+		// Otherwise create the channel right now.
 		let mut channel = match InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 			counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
 			&self.default_configuration, best_block_height, &self.logger, outbound_scid_alias)
@@ -5322,36 +5357,19 @@ where
 			},
 			Ok(res) => res
 		};
-		let channel_id = channel.context.channel_id();
-		let channel_exists = peer_state.has_channel(&channel_id);
-		if channel_exists {
-			self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision for the same peer!".to_owned(), msg.temporary_channel_id.clone()))
-		} else {
-			if !self.default_configuration.manually_accept_inbound_channels {
-				let channel_type = channel.context.get_channel_type();
-				if channel_type.requires_zero_conf() {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
-				}
-				if channel_type.requires_anchors_zero_fee_htlc_tx() {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), msg.temporary_channel_id.clone()));
-				}
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-					node_id: counterparty_node_id.clone(),
-					msg: channel.accept_inbound_channel(user_channel_id),
-				});
-			} else {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push_back((events::Event::OpenChannelRequest {
-					temporary_channel_id: msg.temporary_channel_id.clone(),
-					counterparty_node_id: counterparty_node_id.clone(),
-					funding_satoshis: msg.funding_satoshis,
-					push_msat: msg.push_msat,
-					channel_type: channel.context.get_channel_type().clone(),
-				}, None));
-			}
-			peer_state.inbound_v1_channel_by_id.insert(channel_id, channel);
+
+		let channel_type = channel.context.get_channel_type();
+		if channel_type.requires_zero_conf() {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
 		}
+		if channel_type.requires_anchors_zero_fee_htlc_tx() {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), msg.temporary_channel_id.clone()));
+		}
+		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+			node_id: counterparty_node_id.clone(),
+			msg: channel.accept_inbound_channel(user_channel_id),
+		});
+		peer_state.inbound_v1_channel_by_id.insert(channel_id, channel);
 		Ok(())
 	}
 
@@ -7266,6 +7284,7 @@ where
 						channel_by_id: HashMap::new(),
 						outbound_v1_channel_by_id: HashMap::new(),
 						inbound_v1_channel_by_id: HashMap::new(),
+						unaccepted_inbound_v1_channel_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
 						in_flight_monitor_updates: BTreeMap::new(),
@@ -8460,6 +8479,7 @@ where
 				channel_by_id,
 				outbound_v1_channel_by_id: HashMap::new(),
 				inbound_v1_channel_by_id: HashMap::new(),
+				unaccepted_inbound_v1_channel_by_id: HashMap::new(),
 				latest_features: InitFeatures::empty(),
 				pending_msg_events: Vec::new(),
 				in_flight_monitor_updates: BTreeMap::new(),
