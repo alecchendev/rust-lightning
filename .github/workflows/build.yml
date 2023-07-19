@@ -22,9 +22,10 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v3
       - name: Install Rust ${{ matrix.toolchain }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
-          rustup override set ${{ matrix.toolchain }}
+        uses: "actions-rust-lang/setup-rust-toolchain@v1"
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          rustflags: ""
       - name: Install no-std-check dependencies for ARM Embedded
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
@@ -140,9 +141,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
+        uses: "actions-rust-lang/setup-rust-toolchain@v1"
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          rustflags: ""
       - name: Fetch full tree and rebase on upstream
         run: |
           git remote add upstream https://github.com/lightningdevkit/rust-lightning
@@ -214,9 +216,10 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
+        uses: "actions-rust-lang/setup-rust-toolchain@v1"
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          rustflags: ""
       - name: Install clippy
         run: |
           rustup component add clippy
