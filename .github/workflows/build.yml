@@ -2,11 +2,9 @@ name: Continuous Integration Checks
 
 on:
   push:
-    branches-ignore:
-      - master
-  pull_request:
-    branches-ignore:
-      - master
+    branches:
+      - "lightspark/*"
+  pull_request: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
