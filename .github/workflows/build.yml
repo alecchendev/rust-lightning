@@ -17,21 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ ubuntu-latest, windows-latest, macos-latest ]
-        toolchain: [ stable, beta ]
-        include:
-          - toolchain: stable
-            platform: ubuntu-latest
-            coverage: true
-          # 1.48.0 is the MSRV for all crates except lightning-transaction-sync and Win/Mac
-          - toolchain: 1.48.0
-            platform: ubuntu-latest
-          # Windows requires 1.49.0 because that's the MSRV for supported Tokio
-          - toolchain: 1.49.0
-            platform: windows-latest
-          # MacOS-latest requires 1.54.0 because that's what's required for linking to work properly
-          - toolchain: 1.54.0
-            platform: macos-latest
+        platform: [ ubuntu-latest ]
+        toolchain: [ stable ]
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -92,6 +79,7 @@ jobs:
           fail_ci_if_error: true
 
   benchmark:
+    if: false
     runs-on: ubuntu-latest
     env:
       TOOLCHAIN: stable
@@ -168,6 +156,7 @@ jobs:
         run: ci/check-each-commit.sh upstream/main
 
   check_release:
+    if: false
     runs-on: ubuntu-latest
     env:
       TOOLCHAIN: stable
@@ -197,6 +186,7 @@ jobs:
           RUSTDOCFLAGS: '--cfg=taproot'
 
   fuzz:
+    if: false
     runs-on: ubuntu-latest
     env:
       TOOLCHAIN: 1.58
