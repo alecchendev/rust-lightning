@@ -5199,7 +5199,7 @@ where
           &unaccepted_channel.open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
 					&self.logger, unaccepted_channel.outbound_scid_alias).map_err(|e| APIError::ChannelUnavailable { err: e.to_string() })
 			}
-			_ => Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) })
+			_ => Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() })
 		}?;
 
 		if accept_0conf {
@@ -10211,7 +10211,8 @@ mod tests {
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 		assert!(!open_channel_msg.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
 
-		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
+		// Since we never created a InboundV1Channel object, we cannot generate close event.
+		//check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 	}
 
 	#[test]

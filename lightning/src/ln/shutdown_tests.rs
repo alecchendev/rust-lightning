@@ -739,6 +739,7 @@ fn test_invalid_upfront_shutdown_script() {
 
 	// Use a segwit v0 script with an unsupported witness program
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	open_channel.temporary_channel_id = [0; 32];
 	open_channel.shutdown_scriptpubkey = Some(Builder::new().push_int(0)
 		.push_slice(&[0, 0])
 		.into_script());
