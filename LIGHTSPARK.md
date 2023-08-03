@@ -4,7 +4,7 @@ Here are some recipes for dealing with our own fork of LDK.
 
 ## Sync the upstream repo
 
-If you want to sync to the upstream, you'll need to _set_ the upstream. Do it like this:
+If you want to sync to the upstream (for example, because LDK/Spiral has created a new stable tag), you'll need to _set_ the upstream. Do it like this:
 
 ```
 git remote add upstream https://github.com/lightningdevkit/rust-lightning.git
