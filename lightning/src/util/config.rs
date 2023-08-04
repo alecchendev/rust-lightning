@@ -485,6 +485,9 @@ pub struct ChannelConfig {
 	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: crate::events::Event::PaymentClaimable::counterparty_skimmed_fee_msat
 	//  TODO: link to bLIP when it's merged
 	pub accept_underpaying_htlcs: bool,
+	/// TODO: docs
+	/// Says this channel supports initiating and handling splice outs
+	pub support_splice_out: bool,
 }
 
 impl ChannelConfig {
@@ -518,6 +521,7 @@ impl Default for ChannelConfig {
 			max_dust_htlc_exposure: MaxDustHTLCExposure::FeeRateMultiplier(5000),
 			force_close_avoidance_max_fee_satoshis: 1000,
 			accept_underpaying_htlcs: false,
+			support_splice_out: false,
 		}
 	}
 }
@@ -534,6 +538,7 @@ impl crate::util::ser::Writeable for ChannelConfig {
 			(2, self.forwarding_fee_base_msat, required),
 			(3, self.max_dust_htlc_exposure, required),
 			(4, self.cltv_expiry_delta, required),
+			(5, self.support_splice_out, required),
 			(6, max_dust_htlc_exposure_msat_fixed_limit, required),
 			// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
 			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
@@ -553,12 +558,14 @@ impl crate::util::ser::Readable for ChannelConfig {
 		let mut max_dust_htlc_exposure_msat = None;
 		let mut max_dust_htlc_exposure_enum = None;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		let mut support_splice_out = false;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, accept_underpaying_htlcs, (default_value, false)),
 			(2, forwarding_fee_base_msat, required),
 			(3, max_dust_htlc_exposure_enum, option),
 			(4, cltv_expiry_delta, required),
+			(5, support_splice_out, (default_value, false)),
 			// Has always been written, but became optionally read in 0.0.116
 			(6, max_dust_htlc_exposure_msat, option),
 			(10, force_close_avoidance_max_fee_satoshis, required),
@@ -573,6 +580,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 			cltv_expiry_delta,
 			max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 			force_close_avoidance_max_fee_satoshis,
+			support_splice_out,
 		})
 	}
 }
@@ -650,6 +658,7 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 			(4, self.announced_channel, required),
 			(5, self.options.max_dust_htlc_exposure, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
+			(7, self.options.support_splice_out, required),
 			(8, self.options.forwarding_fee_base_msat, required),
 		});
 		Ok(())
@@ -666,6 +675,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
 		let mut max_dust_htlc_exposure_enum = None;
+		let mut support_splice_out = false;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			// Has always been written, but became optionally read in 0.0.116
@@ -675,6 +685,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 			(4, announced_channel, required),
 			(5, max_dust_htlc_exposure_enum, option),
 			(6, commit_upfront_shutdown_pubkey, required),
+			(7, support_splice_out, (default_value, false)),
 			(8, forwarding_fee_base_msat, required),
 		});
 		let max_dust_htlc_exposure_msat_fixed_limit =
@@ -689,6 +700,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				force_close_avoidance_max_fee_satoshis,
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
+				support_splice_out,
 			},
 			announced_channel,
 			commit_upfront_shutdown_pubkey,
