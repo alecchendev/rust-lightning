@@ -625,6 +625,36 @@ impl UnfundedChannelContext {
 	}
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SpliceState {
+	AwaitingPreviousSplice {
+		previous_scid: u64,
+	},
+	NotSplicing,
+	StartedShutdown,
+	PushedEventToOpenChannel,
+	ReadyForClosingSigned,
+	// State to hold to tell us our counterparty initiated a splice
+	// and it's currently ongoing
+	SpliceCounterparty,
+}
+
+impl_writeable_tlv_based_enum!(SpliceState,
+	(0, AwaitingPreviousSplice) => { (0, previous_scid, required) },
+	(1, NotSplicing) => {},
+	(2, StartedShutdown) => {},
+	(3, PushedEventToOpenChannel) => {},
+	(4, ReadyForClosingSigned) => {},
+	(5, SpliceCounterparty) => {},
+	;
+);
+
+impl SpliceState {
+	pub(super) fn is_awaiting_previous_splice(&self) -> bool {
+		matches!(self, SpliceState::AwaitingPreviousSplice { .. })
+	}
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	config: LegacyChannelConfig,
@@ -641,6 +671,7 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	channel_id: [u8; 32],
 	temporary_channel_id: Option<[u8; 32]>, // Will be `None` for channels created prior to 0.0.115.
 	channel_state: u32,
+	splice_state: SpliceState,
 
 	// When we reach max(6 blocks, minimum_depth), we need to send an AnnouncementSigs message to
 	// our peer. However, we want to make sure they received it, or else rebroadcast it when we
@@ -5607,6 +5638,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				channel_id: temporary_channel_id,
 				temporary_channel_id: Some(temporary_channel_id),
 				channel_state: ChannelState::OurInitSent as u32,
+				splice_state: SpliceState::NotSplicing,
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 				channel_value_satoshis,
@@ -6238,6 +6270,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				temporary_channel_id: Some(msg.temporary_channel_id),
 				channel_id: msg.temporary_channel_id,
 				channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
+				splice_state: SpliceState::NotSplicing,
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 
@@ -6938,6 +6971,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
+			(39, self.context.splice_state, required),
 		});
 
 		Ok(())
@@ -7221,6 +7255,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut pending_outbound_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 
+		let mut splice_state = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -7246,6 +7282,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(31, channel_pending_event_emitted, option),
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
+			(39, splice_state, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7323,6 +7360,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			if iter.next().is_some() { return Err(DecodeError::InvalidValue) }
 		}
 
+		let splice_state = splice_state.unwrap_or(SpliceState::NotSplicing);
+
 		Ok(Channel {
 			context: ChannelContext {
 				user_id,
@@ -7338,6 +7377,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				channel_id,
 				temporary_channel_id,
 				channel_state,
+				splice_state,
 				announcement_sigs_state: announcement_sigs_state.unwrap(),
 				secp_ctx,
 				channel_value_satoshis,
