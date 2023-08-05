@@ -2182,6 +2182,15 @@ where
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
+		self.create_channel_internal(their_network_key, channel_value_satoshis, push_msat, user_channel_id, override_config, None)
+	}
+
+	/// TODO: docs
+	pub fn create_channel_from_splice(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, override_config: Option<UserConfig>, previous_scid: u64) -> Result<[u8; 32], APIError> {
+		self.create_channel_internal(their_network_key, channel_value_satoshis, push_msat, user_channel_id, override_config, Some(previous_scid))
+	}
+
+	fn create_channel_internal(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, override_config: Option<UserConfig>, previous_scid: Option<u64>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -2212,6 +2221,7 @@ where
 			}
 		};
 		let res = channel.get_open_channel(self.genesis_hash.clone());
+		let res = msgs::OpenChannel { previous_scid, ..res };
 
 		let temporary_channel_id = channel.context.channel_id();
 		match peer_state.outbound_v1_channel_by_id.entry(temporary_channel_id) {

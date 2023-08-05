@@ -5924,6 +5924,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				None => Builder::new().into_script(),
 			}),
 			channel_type: Some(self.context.channel_type.clone()),
+			previous_scid: None,
 		}
 	}
 

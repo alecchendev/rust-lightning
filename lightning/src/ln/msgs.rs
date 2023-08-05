@@ -213,6 +213,8 @@ pub struct OpenChannel {
 	/// If this is `None`, we derive the channel type from the intersection of our
 	/// feature bits with our counterparty's feature bits from the [`Init`] message.
 	pub channel_type: Option<ChannelTypeFeatures>,
+	/// TODO: docs
+	pub previous_scid: Option<u64>,
 }
 
 /// An open_channel2 message to be sent by or received from the channel initiator.
@@ -1795,6 +1797,7 @@ impl_writeable_msg!(OpenChannel, {
 }, {
 	(0, shutdown_scriptpubkey, (option, encoding: (Script, WithoutLength))), // Don't encode length twice.
 	(1, channel_type, option),
+	(7304564, previous_scid, option),
 });
 
 impl_writeable_msg!(OpenChannelV2, {
@@ -2812,6 +2815,7 @@ mod tests {
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
 			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
 			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
+			previous_scid: None,
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
