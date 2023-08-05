@@ -18,6 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
+use crate::ln::script::ShutdownScript;
 use crate::sign::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
@@ -844,6 +845,17 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	/// TODO: docs
+	/// Currently only generated for channels that have been closed to splice out
+	ClosingNegotiationReady {
+		/// TODO: docs
+		channel_id: [u8; 32],
+		/// TODO: docs
+		/// amount we need to push since we're slicing
+		push_msat: u64,
+		/// TODO: docs
+		shutdown_script: ShutdownScript,
+	}
 }
 
 impl Writeable for Event {
@@ -1061,6 +1073,14 @@ impl Writeable for Event {
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
 					(8, funding_txo, required),
+				});
+			},
+			&Event::ClosingNegotiationReady { ref channel_id, ref push_msat, ref shutdown_script } => {
+				33u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, push_msat, required),
+					(4, shutdown_script, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -1433,6 +1453,25 @@ impl MaybeReadable for Event {
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo: funding_txo.0.unwrap()
+					}))
+				};
+				f()
+			},
+			33u8 => {
+				let f = || {
+					let mut channel_id = [0; 32];
+					let mut push_msat = 0;
+					let mut shutdown_script = RequiredWrapper(None);
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, push_msat, required),
+						(4, shutdown_script, required),
+					});
+
+					Ok(Some(Event::ClosingNegotiationReady {
+						channel_id,
+						push_msat,
+						shutdown_script: shutdown_script.0.unwrap(),
 					}))
 				};
 				f()
