@@ -2357,6 +2357,35 @@ where
 			.collect()
 	}
 
+	/// TODO: docs
+	pub fn splice_out(
+		&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey,
+		target_feerate_sats_per_1000_weight: Option<u32>, onchain_address: Option<ShutdownScript>,
+		amount_sat: u64
+	) -> Result<(), APIError> {
+		{
+			// Check counterparty features
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+				.ok_or(APIError::APIMisuseError { err: "No connection with this peer".to_owned() })?;
+			let peer_state = peer_state_mutex.lock().unwrap();
+			if !peer_state.latest_features.supports_custom_bit(258) {
+				return Err(APIError::APIMisuseError { err: "Counterparty does not support splice out".to_owned() });
+			}
+
+			// Check that we're able to splice out amount
+			let channel = peer_state.channel_by_id.get(channel_id)
+				.ok_or(APIError::APIMisuseError { err: "No channel with this peer".to_owned() })?;
+			if amount_sat > channel.context.value_to_self_msat() / 1000 {
+				return Err(APIError::APIMisuseError { err: "Amount exceeds channel balance".to_owned() });
+			}
+		}
+
+		// Initiate shutdown
+		self.close_channel_internal(channel_id, counterparty_node_id,
+			target_feerate_sats_per_1000_weight, onchain_address)
+	}
+
 	/// Helper function that issues the channel close events
 	fn issue_channel_close_events(&self, context: &ChannelContext<<SP::Target as SignerProvider>::Signer>, closure_reason: ClosureReason) {
 		let mut pending_events_lock = self.pending_events.lock().unwrap();
@@ -10261,6 +10290,31 @@ mod tests {
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, current_fee);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
+	}
+
+	#[test]
+	fn test_splice_out_checks() {
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let mut splice_out_config = test_default_channel_config();
+		splice_out_config.channel_config.support_splice_out = true;
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(splice_out_config), None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let (_, _, _, channel_id_1, _) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+		let (_, _, _, channel_id_2, _) = create_chan_between_nodes(&nodes[0], &nodes[2]);
+
+		// Test no feature bit errors
+		assert!(nodes[0].node.splice_out(&channel_id_2, &nodes[2].node.get_our_node_id(), None, None, 10_000).is_err());
+
+		let too_large_splice_amount = 100_000;
+		assert!(nodes[0].node.splice_out(&channel_id_1, &nodes[1].node.get_our_node_id(), None, None, too_large_splice_amount).is_err());
+
+		let splice_amount = 50_000;
+		assert!(nodes[0].node.splice_out(&channel_id_1, &nodes[1].node.get_our_node_id(), None, None, splice_amount).is_ok());
+
+		let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+		assert_eq!(shutdown.amount_satoshis, Some(splice_amount));
 	}
 }
 

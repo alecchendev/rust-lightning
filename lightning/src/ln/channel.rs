@@ -1145,6 +1145,10 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 		self.channel_value_satoshis
 	}
 
+	pub fn value_to_self_msat(&self) -> u64 {
+		self.value_to_self_msat
+	}
+
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
 		self.config.options.forwarding_fee_proportional_millionths
 	}
