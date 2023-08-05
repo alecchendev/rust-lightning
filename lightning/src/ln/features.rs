@@ -838,6 +838,18 @@ impl<T: sealed::Context> Features<T> {
 
 		Ok(())
 	}
+
+	/// Returns whether the feature bit is supported by the given flags.
+	/// If even provided, checks bit and bit + 1.
+	/// If odd provied, checks bit - 1 and bit.
+	pub fn supports_custom_bit(&self, bit: usize) -> bool {
+		let bit = bit - (bit % 2);
+		let byte_offset = bit / 8;
+		let required_mask = 1 << (bit - 8 * byte_offset);
+		let optional_mask = required_mask << 1;
+		self.flags.len() > byte_offset &&
+			(self.flags[byte_offset] & (required_mask | optional_mask)) != 0
+	}
 }
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
@@ -1088,6 +1100,8 @@ mod tests {
 		assert!(features.set_required_custom_bit(258).is_ok());
 		assert_eq!(features.flags[31], 0b00000000);
 		assert_eq!(features.flags[32], 0b00000101);
+		assert!(features.supports_custom_bit(256));
+		assert!(features.supports_custom_bit(259));
 
 		let known_bit = <sealed::Bolt11InvoiceContext as sealed::PaymentSecret>::EVEN_BIT;
 		let byte_offset = <sealed::Bolt11InvoiceContext as sealed::PaymentSecret>::BYTE_OFFSET;
@@ -1100,6 +1114,8 @@ mod tests {
 		assert!(features.set_optional_custom_bit(256).is_ok());
 		assert!(features.set_optional_custom_bit(259).is_ok());
 		assert_eq!(features.flags[32], 0b00001010);
+		assert!(features.supports_custom_bit(257));
+		assert!(features.supports_custom_bit(259));
 
 		let mut features = Bolt11InvoiceFeatures::empty();
 		assert!(features.set_required_custom_bit(257).is_ok());
