@@ -36,6 +36,26 @@ use std::convert::TryFrom;
 use crate::ln::functional_test_utils::*;
 
 #[test]
+fn test_splice_out() {
+	// Basic case:
+	// Open a channel
+	// Send some payments
+	// Splice out funds
+	// Test that it works
+
+	// Extra cases:
+	// - Test that we can't send HTLCs after we've started the splice (copy from shutdown)
+	// - Test that if our counterparty broadcasts the latest commitment tx, we revoke it
+	// - Test that the splice works as zero conf
+	// - Test that we can't splice out an amount that would leave us under the new channel
+	//	 reserve
+	// - Test we reject if we don't support it in our config/feature bit
+	// - Test failing at different points (before/after signing commitments, signing funding
+	//	 tx, etc)
+	// - Test we can't splice out on an unconfirmed channel
+}
+
+#[test]
 fn pre_funding_lock_shutdown_test() {
 	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
