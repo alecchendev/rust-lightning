@@ -565,6 +565,8 @@ pub struct Shutdown {
 	///
 	/// Must be in one of these forms: P2PKH, P2SH, P2WPKH, P2WSH, P2TR.
 	pub scriptpubkey: Script,
+	/// TODO: docs
+	pub amount_satoshis: Option<u64>,
 }
 
 /// The minimum and maximum fees which the sender is willing to place on the closing transaction.
@@ -1845,7 +1847,9 @@ impl_writeable_msg!(RevokeAndACK, {
 impl_writeable_msg!(Shutdown, {
 	channel_id,
 	scriptpubkey
-}, {});
+}, {
+	(7304564, amount_satoshis, option),
+});
 
 impl_writeable_msg!(UpdateFailHTLC, {
 	channel_id,
@@ -3274,6 +3278,7 @@ mod tests {
 				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
 				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
 				else                     { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
+			amount_satoshis: None,
 		};
 		let encoded_value = shutdown.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();

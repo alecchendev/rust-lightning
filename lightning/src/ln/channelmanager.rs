@@ -2393,7 +2393,7 @@ where
 
 		// Initiate shutdown
 		self.close_channel_internal(channel_id, counterparty_node_id,
-			target_feerate_sats_per_1000_weight, onchain_address)
+			target_feerate_sats_per_1000_weight, onchain_address, Some(amount_sat))
 	}
 
 	/// Helper function that issues the channel close events
@@ -2414,7 +2414,7 @@ where
 		}, None));
 	}
 
-	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>, amount_satoshis: Option<u64>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
@@ -2435,6 +2435,7 @@ where
 						let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
 							.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
 						failed_htlcs = htlcs;
+						let shutdown_msg = msgs::Shutdown { amount_satoshis, ..shutdown_msg };
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
 						// here as we don't need the monitor update to complete until we send a
@@ -2507,7 +2508,7 @@ where
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
+		self.close_channel_internal(channel_id, counterparty_node_id, None, None, None)
 	}
 
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
@@ -2541,7 +2542,7 @@ where
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel_with_feerate_and_script(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
+		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script, None)
 	}
 
 	#[inline]

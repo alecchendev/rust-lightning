@@ -2723,6 +2723,7 @@ mod tests {
 								msg: msgs::Shutdown {
 									channel_id: [0; 32],
 									scriptpubkey: bitcoin::Script::new(),
+									amount_satoshis: None,
 								},
 							});
 						cfgs[1].chan_handler.pending_events.lock().unwrap()
@@ -2731,6 +2732,7 @@ mod tests {
 								msg: msgs::Shutdown {
 									channel_id: [0; 32],
 									scriptpubkey: bitcoin::Script::new(),
+									amount_satoshis: None,
 								},
 							});
 
@@ -2858,7 +2860,8 @@ mod tests {
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
-		let msg = msgs::Shutdown { channel_id: [42; 32], scriptpubkey: bitcoin::Script::new() };
+		let msg = msgs::Shutdown { channel_id: [42; 32], scriptpubkey: bitcoin::Script::new(),
+			amount_satoshis: None };
 		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
 			node_id: their_id, msg: msg.clone()
 		});

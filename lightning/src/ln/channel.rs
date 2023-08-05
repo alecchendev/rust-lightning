@@ -3943,6 +3943,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			Some(msgs::Shutdown {
 				channel_id: self.context.channel_id,
 				scriptpubkey: self.get_closing_scriptpubkey(),
+				amount_satoshis: None,
 			})
 		} else { None };
 
@@ -4261,6 +4262,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			Some(msgs::Shutdown {
 				channel_id: self.context.channel_id,
 				scriptpubkey: self.get_closing_scriptpubkey(),
+				amount_satoshis: None,
 			})
 		} else { None };
 
@@ -5514,6 +5516,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let shutdown = msgs::Shutdown {
 			channel_id: self.context.channel_id,
 			scriptpubkey: self.get_closing_scriptpubkey(),
+			amount_satoshis: None,
 		};
 
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
