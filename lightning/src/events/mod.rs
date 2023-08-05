@@ -868,6 +868,18 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	/// TODO: docs
+	/// Currently only generated for channels that have been closed to splice out
+	OpenNewSpliceChannel {
+		/// The channel ID of the channel we're splicing from.
+		prev_channel_id: [u8; 32],
+		/// The node_id of the counterparty for the channel we're splicing from.
+		counterparty_node_id: PublicKey,
+		/// The channel value of the requested channel.
+		new_channel_value_satoshis: u64,
+		/// Our counterparty's balance that we must restore upon opening the new channel.
+		push_msat: u64,
+	}
 }
 
 impl Writeable for Event {
@@ -1086,6 +1098,15 @@ impl Writeable for Event {
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
 					(8, funding_txo, required),
+				});
+			},
+			&Event::OpenNewSpliceChannel { ref prev_channel_id, ref counterparty_node_id, ref new_channel_value_satoshis, ref push_msat } => {
+				33u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, prev_channel_id, required),
+					(2, counterparty_node_id, required),
+					(4, new_channel_value_satoshis, required),
+					(6, push_msat, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -1461,6 +1482,28 @@ impl MaybeReadable for Event {
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo: funding_txo.0.unwrap()
+					}))
+				};
+				f()
+			},
+			33u8 => {
+				let f = || {
+					let mut prev_channel_id = [0; 32];
+					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut new_channel_value_satoshis = 0;
+					let mut push_msat = 0;
+					read_tlv_fields!(reader, {
+						(0, prev_channel_id, required),
+						(2, counterparty_node_id, required),
+						(4, new_channel_value_satoshis, required),
+						(6, push_msat, required),
+					});
+
+					Ok(Some(Event::OpenNewSpliceChannel {
+						prev_channel_id,
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						new_channel_value_satoshis,
+						push_msat,
 					}))
 				};
 				f()
