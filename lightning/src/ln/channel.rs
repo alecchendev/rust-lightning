@@ -672,6 +672,10 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	temporary_channel_id: Option<[u8; 32]>, // Will be `None` for channels created prior to 0.0.115.
 	channel_state: u32,
 	splice_state: SpliceState,
+	// If our counterparty initiates a splice, we keep track of the amount they want to splice
+	// in order to verify amounts on the creation of the new channel and build the closing
+	// transaction correctly.
+	counterparty_splice_amount: Option<u64>,
 
 	// When we reach max(6 blocks, minimum_depth), we need to send an AnnouncementSigs message to
 	// our peer. However, we want to make sure they received it, or else rebroadcast it when we
@@ -5639,6 +5643,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				temporary_channel_id: Some(temporary_channel_id),
 				channel_state: ChannelState::OurInitSent as u32,
 				splice_state: SpliceState::NotSplicing,
+				counterparty_splice_amount: None,
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 				channel_value_satoshis,
@@ -6271,6 +6276,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				channel_id: msg.temporary_channel_id,
 				channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
 				splice_state: SpliceState::NotSplicing,
+				counterparty_splice_amount: None,
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 
@@ -6972,6 +6978,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
 			(39, self.context.splice_state, required),
+			(41, self.context.counterparty_splice_amount, option),
 		});
 
 		Ok(())
@@ -7256,6 +7263,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut holding_cell_skimmed_fees_opt: Option<Vec<Option<u64>>> = None;
 
 		let mut splice_state = None;
+		let mut counterparty_splice_amount = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -7283,6 +7291,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
 			(39, splice_state, option),
+			(41, counterparty_splice_amount, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7378,6 +7387,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				temporary_channel_id,
 				channel_state,
 				splice_state,
+				counterparty_splice_amount,
 				announcement_sigs_state: announcement_sigs_state.unwrap(),
 				secp_ctx,
 				channel_value_satoshis,
