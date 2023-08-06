@@ -217,6 +217,18 @@ struct ClaimableHTLC {
 	counterparty_skimmed_fee_msat: Option<u64>,
 }
 
+impl From<&ClaimableHTLC> for events::ClaimedHTLC {
+	fn from(val: &ClaimableHTLC) -> Self {
+		events::ClaimedHTLC {
+			short_channel_id: val.prev_hop.short_channel_id,
+			htlc_id: val.prev_hop.htlc_id,
+			cltv_expiry: val.cltv_expiry,
+			value: val.value,
+			total_msat: val.total_msat,
+		}
+	}
+}
+
 /// A payment identifier used to uniquely identify a payment to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
@@ -471,11 +483,13 @@ struct ClaimingPayment {
 	amount_msat: u64,
 	payment_purpose: events::PaymentPurpose,
 	receiver_node_id: PublicKey,
+	htlcs: Vec<events::ClaimedHTLC>,
 }
 impl_writeable_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
 	(2, payment_purpose, required),
 	(4, receiver_node_id, required),
+	(5, htlcs, optional_vec),
 });
 
 struct ClaimablePayment {
@@ -4753,9 +4767,10 @@ where
 					}
 				}
 
+				let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
 				let dup_purpose = claimable_payments.pending_claiming_payments.insert(payment_hash,
 					ClaimingPayment { amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
-					payment_purpose: payment.purpose, receiver_node_id,
+					payment_purpose: payment.purpose, receiver_node_id, htlcs,
 				});
 				if dup_purpose.is_some() {
 					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
@@ -4996,9 +5011,9 @@ where
 			match action {
 				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash } => {
 					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-					if let Some(ClaimingPayment { amount_msat, payment_purpose: purpose, receiver_node_id }) = payment {
+					if let Some(ClaimingPayment { amount_msat, payment_purpose: purpose, receiver_node_id, htlcs }) = payment {
 						self.pending_events.lock().unwrap().push_back((events::Event::PaymentClaimed {
-							payment_hash, purpose, amount_msat, receiver_node_id: Some(receiver_node_id),
+							payment_hash, purpose, amount_msat, receiver_node_id: Some(receiver_node_id), htlcs,
 						}, None));
 					}
 				},
@@ -8992,7 +9007,7 @@ where
 							.expect("Failed to get node_id for phantom node recipient");
 						receiver_node_id = Some(phantom_pubkey)
 					}
-					for claimable_htlc in payment.htlcs {
+					for claimable_htlc in &payment.htlcs {
 						claimable_amt_msat += claimable_htlc.value;
 
 						// Add a holding-cell claim of the payment to the Channel, which should be
@@ -9028,6 +9043,7 @@ where
 						payment_hash,
 						purpose: payment.purpose,
 						amount_msat: claimable_amt_msat,
+						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
 					}, None));
 				}
 			}
