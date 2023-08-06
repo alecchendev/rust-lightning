@@ -7474,6 +7474,9 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
+	if config.channel_config.support_splice_out {
+		features.set_optional_custom_bit(259).unwrap();
+	}
 	features
 }
 
