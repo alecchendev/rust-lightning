@@ -4267,8 +4267,31 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			},
 		};
 
-		// From here on out, we may not fail!
+		if let (Some(amount_sat), Some(feerate_per_kw)) = (msg.splice_amount, msg.splice_feerate_per_kw) {
+			if !self.context.config().support_splice_out {
+				return Err(ChannelError::Close("Peer sent a shutdown for splice, but we don't support splice out".to_owned()));
+			}
+			if self.context.splice_state != SpliceState::NotSplicing {
+				return Err(ChannelError::Close("Peer sent a shutdown for splice, but we're already splicing".to_owned()));
+			}
+			if !self.context.pending_inbound_htlcs.is_empty() || !self.context.pending_outbound_htlcs.is_empty() {
+				return Err(ChannelError::Close("Peer sent a shutdown for splice, but we have pending HTLCs".to_owned()));
+			}
+			let counterparty_balance_sat = (self.context.channel_value_satoshis * 1000 - self.context.value_to_self_msat) / 1000;
+			if amount_sat > counterparty_balance_sat {
+				return Err(ChannelError::Close(format!("Peer sent a shutdown for splice, with an amount ({}) higher than their balance ({})",
+					amount_sat, counterparty_balance_sat)));
+			}
+			let fee = feerate_per_kw as u64 * self.get_splice_out_transaction_weight(&msg.scriptpubkey) / 1000;
+			if amount_sat.saturating_sub(fee) < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+				return Err(ChannelError::Close(format!("Peer sent shutdown for splice, but the splice amount ({}) after fees ({}) is below dust",
+					amount_sat, fee)));
+			}
+			self.context.splice_state = SpliceState::OpeningNextChannel;
+			self.context.splice_amount_and_feerate = Some((amount_sat, feerate_per_kw));
+		}
 
+		// From here on out, we may not fail!
 		self.context.channel_state |= ChannelState::RemoteShutdownSent as u32;
 		self.context.update_time_counter += 1;
 
