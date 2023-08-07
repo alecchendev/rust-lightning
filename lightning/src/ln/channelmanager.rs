@@ -5614,7 +5614,7 @@ where
 
 				let funding_txo_opt = chan_entry.get().context.get_funding_txo();
 				let (shutdown, monitor_update_opt, htlcs) = try_chan_entry!(self,
-					chan_entry.get_mut().shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
+					chan_entry.get_mut().shutdown(&self.signer_provider, &peer_state.latest_features, self.get_current_default_configuration(), &msg), chan_entry);
 				dropped_htlcs = htlcs;
 
 				if let Some(msg) = shutdown {

@@ -4125,6 +4125,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.context.closing_negotiation_ready()
 	}
 
+	fn set_counterparty_splice_amount(&mut self, amount: Option<u64>) {
+		self.context.counterparty_splice_amount = amount;
+	}
+
 	/// Checks if the closing_signed negotiation is making appropriate progress, possibly returning
 	/// an Err if no progress is being made and the channel should be force-closed instead.
 	/// Should be called on a one-minute timer.
@@ -4201,7 +4205,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	pub fn shutdown<SP: Deref>(
-		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown
+		&mut self, signer_provider: &SP, their_features: &InitFeatures, config: &UserConfig, msg: &msgs::Shutdown
 	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
 	where SP::Target: SignerProvider
 	{
@@ -4223,6 +4227,22 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
 			return Err(ChannelError::Warn(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
+		}
+
+		if let Some(amount_sat) = msg.amount_satoshis {
+			if !self.context.config().support_splice_out {
+				return Err(ChannelError::Warn(
+					"Peer sent a shutdown with an amount for splice, but we don't support splice out".to_owned(),
+				));
+			}
+			let new_channel_value_satoshis = self.context.get_value_satoshis().saturating_sub(amount_sat);
+			let new_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(new_channel_value_satoshis, config);
+			let their_new_balance = self.pending_remote_value_msat() - amount_sat * 1000;
+			if their_new_balance < new_channel_reserve_satoshis * 1000 {
+				return Err(ChannelError::Warn(
+					"Received shutdown to splice out an amount that would put our peer under our new channel's reserve".to_owned(),
+				));
+			}
 		}
 
 		if self.context.counterparty_shutdown_scriptpubkey.is_some() {
@@ -4255,6 +4275,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		};
 
 		// From here on out, we may not fail!
+		if let Some(amount_sat) = msg.amount_satoshis {
+			self.set_counterparty_splice_amount(Some(amount_sat));
+			self.context.set_splice_state(SpliceState::SpliceCounterparty);
+		}
 
 		self.context.channel_state |= ChannelState::RemoteShutdownSent as u32;
 		self.context.update_time_counter += 1;
