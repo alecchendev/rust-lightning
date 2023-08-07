@@ -2679,6 +2679,18 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger))
 	}
 
+	/// Taken from update_add_htlc logic used to check remote reserve value after adding an HTLC
+	pub fn pending_remote_value_msat(&self) -> u64 {
+		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
+		let removed_outbound_total_msat = self.context.pending_outbound_htlcs.iter().map(|htlc| match htlc.state {
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) => htlc.amount_msat,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => htlc.amount_msat,
+			_ => 0,
+		}).sum::<u64>();
+		let pending_value_to_self_msat = self.context.value_to_self_msat() - inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
+		self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat
+	}
+
 	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
 		&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus,
 		create_pending_htlc_status: F, fee_estimator: &LowerBoundedFeeEstimator<FE>, logger: &L
