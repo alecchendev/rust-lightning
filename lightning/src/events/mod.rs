@@ -79,6 +79,28 @@ impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(2, SpontaneousPayment)
 );
 
+/// Information about an HTLC that is part of a payment that can be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedHTLC {
+	/// The SCID over which the HTLC was received.
+	pub short_channel_id: u64,
+	/// The HTLC's ID.
+	pub htlc_id: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The amount (in msats) of this part of an MPP.
+	pub value: u64,
+	/// The sender-indented sum total of all MPP parts.
+	pub total_msat: u64,
+}
+impl_writeable_tlv_based!(ClaimedHTLC, {
+	(0, short_channel_id, required),
+	(1, htlc_id, required),
+	(2, cltv_expiry, required),
+	(3, value, required),
+	(4, total_msat, required),
+});
+
 /// When the payment path failure took place and extra details about it. [`PathFailure::OnPath`] may
 /// contain a [`NetworkUpdate`] that needs to be applied to the [`NetworkGraph`].
 ///
@@ -454,6 +476,8 @@ pub enum Event {
 		/// The purpose of the claimed payment, i.e. whether the payment was for an invoice or a
 		/// spontaneous payment.
 		purpose: PaymentPurpose,
+		/// The HTLCs that comprise the claimed payment.
+		htlcs: Vec<ClaimedHTLC>,
 	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -999,13 +1023,14 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id } => {
+			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref htlcs } => {
 				19u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
 					(2, purpose, required),
 					(4, amount_msat, required),
+					(5, htlcs.clone(), optional_vec),
 				});
 			},
 			&Event::ProbeSuccessful { ref payment_id, ref payment_hash, ref path } => {
@@ -1325,17 +1350,20 @@ impl MaybeReadable for Event {
 					let mut purpose = UpgradableRequired(None);
 					let mut amount_msat = 0;
 					let mut receiver_node_id = None;
+					let mut htlcs: Option<Vec<ClaimedHTLC>> = Some(vec![]);
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
 						(2, purpose, upgradable_required),
 						(4, amount_msat, required),
+						(5, htlcs, optional_vec),
 					});
 					Ok(Some(Event::PaymentClaimed {
 						receiver_node_id,
 						payment_hash,
 						purpose: _init_tlv_based_struct_field!(purpose, upgradable_required),
 						amount_msat,
+						htlcs: htlcs.unwrap_or(vec![]),
 					}))
 				};
 				f()
