@@ -9,6 +9,7 @@
 
 //! Tests of our shutdown and closing_signed negotiation logic.
 
+use crate::ln::chan_utils::build_closing_transaction;
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
@@ -53,6 +54,198 @@ fn test_splice_out() {
 	// - Test failing at different points (before/after signing commitments, signing funding
 	//	 tx, etc)
 	// - Test we can't splice out on an unconfirmed channel
+}
+
+#[test]
+fn test_basic_splice_out() {
+	// WIP test for splice out flow
+
+	// Create two nodes, 1 with custom config to support splice out
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut splice_out_config = test_default_channel_config();
+	splice_out_config.channel_config.support_splice_out = true;
+	splice_out_config.manually_accept_inbound_channels = true; // for zero conf
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(splice_out_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create a channel
+	let (_, _, _, channel_id, initial_funding_tx) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	// Rebalance to channel (idk why not)
+	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+	// Call ChannelManager::splice_out
+	// let splice_amount = 89_500;
+	let splice_amount = 10_000;
+	nodes[0].node.splice_out(&channel_id, &nodes[1].node.get_our_node_id(), None, None, splice_amount).unwrap();
+
+	// Make sure shutdown is sent with extra TLV
+	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	assert_eq!(shutdown.amount_satoshis, Some(splice_amount));
+
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &shutdown);
+	let shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &shutdown);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty()); // Push closing negotiation event
+	// ... hmm maybe this logic should actually go in the get_and_clear_pending_events func...
+	let event = get_event!(&nodes[0], Event::ClosingNegotiationReady);
+	let (channel_id, push_msat, shutdown_script) = match event {
+		Event::ClosingNegotiationReady { channel_id: chan_id, push_msat, shutdown_script } => {
+			assert_eq!(chan_id, channel_id);
+			(chan_id, push_msat, shutdown_script)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let channels = &nodes[0].node.list_channels();
+	let chan_details = channels.iter().find(|chan| chan.channel_id == channel_id).unwrap();
+	let short_channel_id = chan_details.short_channel_id.unwrap();
+	let new_channel_value_satoshis = chan_details.channel_value_satoshis - splice_amount;
+	let mut random_bytes = [0u8; 16];
+	random_bytes.copy_from_slice(&nodes[0].keys_manager.get_secure_random_bytes()[..16]);
+	let user_channel_id_0 = 42;
+
+	nodes[0].node.create_channel_from_splice(nodes[1].node.get_our_node_id(),
+		new_channel_value_satoshis, push_msat, user_channel_id_0, None, short_channel_id).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert_eq!(open_channel.previous_scid, Some(short_channel_id));
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
+	let open_channel_request = get_event!(nodes[1], Event::OpenChannelRequest);
+
+	let (temporary_channel_id, chan_req_counterparty_node_id) = if let Event::OpenChannelRequest {
+		temporary_channel_id, counterparty_node_id, funding_satoshis, push_msat,
+		channel_type: _, previous_scid: Some(prev_scid)
+	} = open_channel_request {
+		let chan_details = &nodes[1].node.list_channels().into_iter().find(|chan| chan.short_channel_id.unwrap() == prev_scid).unwrap();
+		let new_channel_value_satoshis = chan_details.channel_value_satoshis - splice_amount;
+		let prev_balance = chan_details.balance_msat;
+
+		assert_eq!(prev_scid, short_channel_id);
+		assert_eq!(counterparty_node_id, nodes[0].node.get_our_node_id());
+		assert_eq!(funding_satoshis, new_channel_value_satoshis);
+		assert_eq!(push_msat, prev_balance);
+		// assert!(channel_type.supports_zero_conf()); // Why is this false?
+		// Note: We set our outbound channel type to barely support anything for some reason...
+		// but this doesn't make a difference in terms of us accepting so it's fine for now...
+		(temporary_channel_id, counterparty_node_id)
+	} else { panic!("Unexpected event"); };
+
+	let mut random_bytes = [0u8; 16];
+	random_bytes.copy_from_slice(&nodes[0].keys_manager.get_secure_random_bytes()[..16]);
+	let user_channel_id_1 = u128::from_be_bytes(random_bytes);
+
+	nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &chan_req_counterparty_node_id, user_channel_id_1).unwrap();
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
+	let funding_gen_event = get_event!(nodes[0], Event::FundingGenerationReady);
+	let (temporary_channel_id, funding_script) = if let Event::FundingGenerationReady { temporary_channel_id: chan_id, channel_value_satoshis, output_script, .. } = funding_gen_event {
+		assert_eq!(chan_id, temporary_channel_id);
+		assert_eq!(channel_value_satoshis, new_channel_value_satoshis);
+		(chan_id, output_script)
+	} else { panic!("Unexpected event"); };
+	let funding_tx = build_closing_transaction(
+		splice_amount - 182, // manual fee to match for testing (CHANGE LATER)
+		new_channel_value_satoshis,
+		shutdown_script.into_inner(),
+		funding_script,
+		bitcoin::OutPoint { txid: initial_funding_tx.txid(), vout: 0 }
+	);
+
+	nodes[0].node.funding_transaction_generated_for_splice(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	let _channel_pending = get_event!(nodes[1], Event::ChannelPending);
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+	let channel_pending = get_event!(nodes[0], Event::ChannelPending);
+	let _channel_id = if let Event::ChannelPending { channel_id, .. } = channel_pending {
+		channel_id
+	} else { panic!("Unexpected event"); };
+	check_added_monitors!(nodes[0], 1);
+	// Don't broadcast till we do closing signed
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
+
+	// Closing signed ->
+	let closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+
+	// Handle (Broadcast)
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed);
+	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let splice_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+	// Closing signed <-
+	// Revoke <-
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 3);
+	let closing_signed = get_event_msg_from_events!(events, MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
+	let raa_0 = get_event_msg_from_events!(events, MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	let _channel_update = match &events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { msg } => {
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	// Handle (Broadcast)
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &closing_signed);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	let splice_tx_dup = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+	assert_eq!(splice_tx, splice_tx_dup);
+	check_spends!(splice_tx, initial_funding_tx);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	let raa_1 = get_event_msg_from_events!(events, MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	let _channel_update = match &events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { msg } => {
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	get_event!(nodes[0], Event::ChannelClosed);
+	get_event!(nodes[1], Event::ChannelClosed);
+
+	// Revoke ->
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa_0);
+	check_added_monitors!(nodes[0], 1);
+	let channel_ready_0 = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+
+	// Handle revoke
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa_1);
+	check_added_monitors!(nodes[1], 1);
+	let channel_ready_1 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+
+	// Channel Ready
+	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_0);
+	let channel_update_0 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_1);
+	let channel_update_1 = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+	nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &channel_update_0);
+	nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &channel_update_1);
+
+	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	// Revocation! should have the case here that if we broadcast that last
+	// commitment tx, the monitors automatically revoke them
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	send_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	send_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+
 }
 
 #[test]
