@@ -2205,7 +2205,7 @@ where
 			.ok_or_else(|| APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) })?;
 
 		let mut peer_state = peer_state_mutex.lock().unwrap();
-		let channel = {
+		let mut channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
@@ -2222,6 +2222,9 @@ where
 		};
 		let res = channel.get_open_channel(self.genesis_hash.clone());
 		let res = msgs::OpenChannel { previous_scid, ..res };
+		if let Some(previous_scid) = previous_scid {
+			channel.context.set_splice_state(SpliceState::AwaitingPreviousSplice { previous_scid });
+		}
 
 		let temporary_channel_id = channel.context.channel_id();
 		match peer_state.outbound_v1_channel_by_id.entry(temporary_channel_id) {
@@ -5362,6 +5365,9 @@ where
 			},
 			Ok(res) => res
 		};
+		if let Some(previous_scid) = msg.previous_scid {
+			channel.context.set_splice_state(SpliceState::AwaitingPreviousSplice { previous_scid });
+		}
 		let channel_id = channel.context.channel_id();
 		let channel_exists = peer_state.has_channel(&channel_id);
 		if channel_exists {
@@ -5388,6 +5394,7 @@ where
 					funding_satoshis: msg.funding_satoshis,
 					push_msat: msg.push_msat,
 					channel_type: channel.context.get_channel_type().clone(),
+					previous_scid: msg.previous_scid,
 				}, None));
 			}
 			peer_state.inbound_v1_channel_by_id.insert(channel_id, channel);

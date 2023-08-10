@@ -817,6 +817,9 @@ pub enum Event {
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
+		/// TODO: docs
+		/// If this is the new channel for a splice this will be filled
+		previous_scid: Option<u64>,
 	},
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
