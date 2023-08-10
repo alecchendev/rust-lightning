@@ -668,6 +668,13 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	// cost of others, but should really just be changed.
 
 	cur_holder_commitment_transaction_number: u64,
+
+	// The commitment point corresponding to `cur_holder_commitment_transaction_number`, which is the
+	// *next* state. We recompute it each time the state changes because the state changes in places
+	// that might be fallible: in particular, if the commitment point must be fetched from a remote
+	// source, we want to ensure it happens at a point where we can actually fail somewhat gracefully;
+	// i.e., force-closing a channel is better than a panic!
+	next_per_commitment_point: PublicKey,
 	cur_counterparty_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
@@ -1455,13 +1462,14 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	/// our counterparty!)
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
-		let per_commitment_point = self.holder_signer.get_per_commitment_point(commitment_number, &self.secp_ctx);
+	fn build_holder_transaction_keys(&self) -> TxCreationKeys {
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
 
-		TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
+		TxCreationKeys::derive_new(
+			&self.secp_ctx, &self.next_per_commitment_point, delayed_payment_base, htlc_basepoint,
+			&counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
 	}
 
 	#[inline]
@@ -2515,7 +2523,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.context.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_signer = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		self.context.next_per_commitment_point = 
+			self.context.holder_signer.get_per_commitment_point(
+				self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx
+			).map_err(|_| ChannelError::Close("Unable to generate commitment point".to_owned()))?;
+		
+		let holder_signer = self.context.build_holder_transaction_keys();
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -2559,6 +2572,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		assert_eq!(self.context.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
 		self.context.channel_state = ChannelState::FundingSent as u32;
 		self.context.cur_holder_commitment_transaction_number -= 1;
+		self.context.next_per_commitment_point =
+			self.context.holder_signer.get_per_commitment_point(
+				self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx
+			).map_err(|_| ChannelError::Close("Unable to generate commitment point".to_owned()))?;
+
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", log_bytes!(self.context.channel_id()));
@@ -2880,7 +2898,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys();
 
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger);
 		let commitment_txid = {
@@ -3044,6 +3062,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		};
 
 		self.context.cur_holder_commitment_transaction_number -= 1;
+		self.context.next_per_commitment_point =
+			self.context.holder_signer.get_per_commitment_point(
+				self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx
+			).map_err(|_| ChannelError::Close("Unable to generate commitment point".to_owned()))?;
+		
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
 		self.context.resend_order = RAACommitmentOrder::CommitmentFirst;
@@ -3494,7 +3517,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let inbound_stats = self.context.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
 		let outbound_stats = self.context.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys();
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
@@ -3675,10 +3698,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			assert!(!self.context.is_outbound() || self.context.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
-			let next_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 			Some(msgs::ChannelReady {
 				channel_id: self.context.channel_id(),
-				next_per_commitment_point,
+				next_per_commitment_point: self.context.next_per_commitment_point,
 				short_channel_id_alias: Some(self.context.outbound_scid_alias),
 			})
 		} else { None };
@@ -3757,12 +3779,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 		let per_commitment_secret = self.context.holder_signer.release_commitment_secret(self.context.cur_holder_commitment_transaction_number + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.context.channel_id,
 			per_commitment_secret,
-			next_per_commitment_point,
+			next_per_commitment_point: self.context.next_per_commitment_point,
 			#[cfg(taproot)]
 			next_local_nonce: None,
 		}
@@ -3861,7 +3882,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		if msg.next_remote_commitment_number > 0 {
-			let expected_point = self.context.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx);
+			let state_index = INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1;
+			let expected_point = self.context.holder_signer.get_per_commitment_point(state_index, &self.context.secp_ctx)
+				.map_err(|_| ChannelError::Close(format!("Unable to retrieve per-commitment point for state {state_index}")))?;
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
 				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
@@ -3926,11 +3949,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 
 			// We have OurChannelReady set!
-			let next_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 			return Ok(ReestablishResponses {
 				channel_ready: Some(msgs::ChannelReady {
 					channel_id: self.context.channel_id(),
-					next_per_commitment_point,
+					next_per_commitment_point: self.context.next_per_commitment_point,
 					short_channel_id_alias: Some(self.context.outbound_scid_alias),
 				}),
 				raa: None, commitment_update: None,
@@ -3966,10 +3988,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.context.cur_holder_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
-			let next_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 			Some(msgs::ChannelReady {
 				channel_id: self.context.channel_id(),
-				next_per_commitment_point,
+				next_per_commitment_point: self.context.next_per_commitment_point,
 				short_channel_id_alias: Some(self.context.outbound_scid_alias),
 			})
 		} else { None };
@@ -4655,13 +4676,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		if need_commitment_update {
 			if self.context.channel_state & (ChannelState::MonitorUpdateInProgress as u32) == 0 {
 				if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
-					let next_per_commitment_point =
-						self.context.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx);
-					return Some(msgs::ChannelReady {
-						channel_id: self.context.channel_id,
-						next_per_commitment_point,
-						short_channel_id_alias: Some(self.context.outbound_scid_alias),
-					});
+					if let Ok(next_per_commitment_point) = self.context.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx) {
+						return Some(msgs::ChannelReady {
+							channel_id: self.context.channel_id,
+							next_per_commitment_point,
+							short_channel_id_alias: Some(self.context.outbound_scid_alias),
+						});
+					}
 				}
 			} else {
 				self.context.monitor_pending_channel_ready = true;
@@ -5588,6 +5609,9 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 
 		let temporary_channel_id = entropy_source.get_secure_random_bytes();
 
+		let next_per_commitment_point = holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx)
+			.map_err(|_| APIError::ChannelUnavailable { err: "Unable to generate initial commitment point".to_owned()})?;
+
 		Ok(Self {
 			context: ChannelContext {
 				user_id,
@@ -5616,6 +5640,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				destination_script,
 
 				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+				next_per_commitment_point,
 				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				value_to_self_msat,
 
@@ -5854,7 +5879,6 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::OpenChannel {
@@ -5874,7 +5898,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 			payment_point: keys.payment_point,
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
-			first_per_commitment_point,
+			first_per_commitment_point: self.context.next_per_commitment_point,
 			channel_flags: if self.context.config.announced_channel {1} else {0},
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
@@ -6233,6 +6257,9 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
+		let next_per_commitment_point = holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, &secp_ctx)
+			.map_err(|_| ChannelError::Close("Unable to generate initial commitment point".to_owned()))?;
+
 		let chan = Self {
 			context: ChannelContext {
 				user_id,
@@ -6260,6 +6287,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				destination_script,
 
 				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+				next_per_commitment_point,
 				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 				value_to_self_msat: msg.push_msat,
 
@@ -6408,7 +6436,6 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
-		let first_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
@@ -6425,7 +6452,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 			payment_point: keys.payment_point,
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
-			first_per_commitment_point,
+			first_per_commitment_point: self.context.next_per_commitment_point,
 			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
@@ -6448,7 +6475,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Txid, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
+		let keys = self.context.build_holder_transaction_keys();
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -6555,6 +6582,13 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 		self.context.channel_id = funding_txo.to_channel_id();
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 		self.context.cur_holder_commitment_transaction_number -= 1;
+
+		let next_per_commitment_point_result = self.context.holder_signer.get_per_commitment_point(
+			self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		if next_per_commitment_point_result.is_err() {
+			return Err((self, ChannelError::Close("Unable to generate commitment point".to_owned())));
+		}
+		self.context.next_per_commitment_point = next_per_commitment_point_result.unwrap();
 
 		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.context.channel_id()));
 
@@ -7309,6 +7343,11 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
+		// If we weren't able to load the next_per_commitment_point, ask the signer for it now.
+		let next_per_commitment_point = holder_signer.get_per_commitment_point(
+			cur_holder_commitment_transaction_number, &secp_ctx
+		).map_err(|_| DecodeError::Io(io::ErrorKind::Other))?;
+
 		// `user_id` used to be a single u64 value. In order to remain backwards
 		// compatible with versions prior to 0.0.113, the u128 is serialized as two
 		// separate u64 values.
@@ -7361,6 +7400,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				destination_script,
 
 				cur_holder_commitment_transaction_number,
+				next_per_commitment_point,
 				cur_counterparty_commitment_transaction_number,
 				value_to_self_msat,
 

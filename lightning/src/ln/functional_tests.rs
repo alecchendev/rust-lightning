@@ -714,7 +714,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 pubkeys.funding_pubkey)
 	};
 
@@ -1421,7 +1421,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap(),
 		 chan_signer.pubkeys().funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
@@ -1431,7 +1431,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 chan_signer.pubkeys().funding_pubkey)
 	};
 

@@ -97,7 +97,7 @@ impl EnforcingSigner {
 }
 
 impl ChannelSigner for EnforcingSigner {
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()> {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
