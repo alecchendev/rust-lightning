@@ -560,6 +560,12 @@ pub(crate) enum MonitorUpdateCompletionAction {
 		event: events::Event,
 		downstream_counterparty_and_funding_outpoint: Option<(PublicKey, OutPoint, RAAMonitorUpdateBlockingAction)>,
 	},
+	/// TODO: docs
+	/// We have persisted our new channel's signed initial commitment transactions, and are
+	/// ready to sign the splice tx, closing the previous channel.
+	SignSpliceTx {
+		previous_scid: u64,
+	}
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
@@ -573,6 +579,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// downgrades to prior versions.
 		(1, downstream_counterparty_and_funding_outpoint, option),
 	},
+	(4, SignSpliceTx) => { (0, previous_scid, required) },
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5053,6 +5060,27 @@ where
 						self.handle_monitor_update_release(node_id, funding_outpoint, Some(blocker));
 					}
 				},
+				MonitorUpdateCompletionAction::SignSpliceTx { previous_scid } => {
+					let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&previous_scid) {
+						Some((cp_id, chan_id)) => (*cp_id, *chan_id),
+						None => {
+							println!("Got SignSpliceTx for unknown channel {}!", previous_scid);
+							continue;
+						}
+					};
+					let per_peer_state = self.per_peer_state.write().unwrap();
+					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+						let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+						let peer_state = &mut *peer_state_lock;
+						if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
+							chan.context.set_splice_state(SpliceState::ReadyForClosingSigned);
+						} else {
+							println!("Got SignSpliceTx for unknown channel!");
+						}
+					} else {
+						println!("Got SignSpliceTx for unknown counterparty!");
+					}
+				}
 			}
 		}
 	}
@@ -5540,6 +5568,11 @@ where
 			hash_map::Entry::Occupied(mut chan) => {
 				let monitor = try_chan_entry!(self,
 					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
+				if let SpliceState::AwaitingPreviousSplice { previous_scid } = chan.get().context.get_splice_state() {
+					peer_state.monitor_update_blocked_actions.entry(msg.channel_id).or_insert(Vec::new()).push(
+						MonitorUpdateCompletionAction::SignSpliceTx { previous_scid }
+					);
+				}
 				let update_res = self.chain_monitor.watch_channel(chan.get().context.get_funding_txo().unwrap(), monitor);
 				let mut res = handle_new_monitor_update!(self, update_res, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
 				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
