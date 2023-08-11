@@ -35,6 +35,7 @@ use tokio::net::TcpStream;
 use tokio::{io, time};
 use tokio::sync::mpsc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::{debug_span, Instrument};
 
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
@@ -162,7 +163,7 @@ impl Connection {
 	) where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 		// Create a waker to wake up poll_event_process, above
 		let (event_waker, event_receiver) = mpsc::channel(1);
-		tokio::spawn(Self::poll_event_process(peer_manager.clone(), event_receiver));
+		tokio::spawn(Self::poll_event_process(peer_manager.clone(), event_receiver).instrument(debug_span!("process_events").or_current()));
 
 		// 4KiB is nice and big without handling too many messages all at once, giving other peers
 		// a chance to do some work.
@@ -304,7 +305,7 @@ where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 	let last_us = Arc::clone(&us);
 
 	let handle_opt = if peer_manager.as_ref().new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr).is_ok() {
-		Some(tokio::spawn(Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver)))
+		Some(tokio::spawn(Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver).instrument(debug_span!("schedule_read").or_current())))
 	} else {
 		// Note that we will skip socket_disconnected here, in accordance with the PeerManager
 		// requirements.
@@ -372,7 +373,7 @@ where PM::Target: APeerManager<Descriptor = SocketDescriptor> {
 			}).await {
 				Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver).await;
 			}
-		}))
+		}.instrument(debug_span!("schedule_read").or_current())))
 	} else {
 		// Note that we will skip socket_disconnected here, in accordance with the PeerManager
 		// requirements.
