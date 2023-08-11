@@ -3715,7 +3715,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable =
-			if self.context.is_outbound() && self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::FundingSent as u32 {
+			if self.context.is_outbound() && self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::FundingSent as u32
+				&& !self.context.splice_state.is_awaiting_previous_splice() {
 				self.context.funding_transaction.take()
 			} else { None };
 		// That said, if the funding transaction is already confirmed (ie we're active with a
@@ -3730,7 +3731,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// * an inbound channel that failed to persist the monitor on funding_created and we got
 		//   the funding transaction confirmed before the monitor was persisted, or
 		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all.
-		let channel_ready = if self.context.monitor_pending_channel_ready {
+		let channel_ready = if self.context.monitor_pending_channel_ready
+			&& !self.context.splice_state.is_awaiting_previous_splice()
+		{
 			assert!(!self.context.is_outbound() || self.context.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
