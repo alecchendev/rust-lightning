@@ -36,7 +36,7 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::{WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
-use crate::events::ClosureReason;
+use crate::events::{ClosureReason, Event};
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -1240,6 +1240,14 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 	/// Returns true if funding_created was sent/received.
 	pub fn is_funding_initiated(&self) -> bool {
 		self.channel_state >= ChannelState::FundingSent as u32
+	}
+
+	pub fn get_splice_state(&self) -> SpliceState {
+		self.splice_state.clone()
+	}
+
+	pub fn set_splice_state(&mut self, new_state: SpliceState) {
+		self.splice_state = new_state;
 	}
 
 	/// Transaction nomenclature is somewhat confusing here as there are many different cases - a
@@ -4121,7 +4129,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// after both sides have exchanged a `shutdown` message and all HTLCs have been drained. At
 	/// this point if we're the funder we should send the initial closing_signed, and in any case
 	/// shutdown should complete within a reasonable timeframe.
-	fn closing_negotiation_ready(&self) -> bool {
+	pub fn closing_negotiation_ready(&self) -> bool {
 		self.context.closing_negotiation_ready()
 	}
 
@@ -4143,12 +4151,26 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(())
 	}
 
+	pub fn maybe_get_closing_ready(&mut self) -> Option<Event> {
+		if self.closing_negotiation_ready() && self.context.splice_state == SpliceState::StartedShutdown {
+			self.context.splice_state = SpliceState::PushedEventToOpenChannel;
+			Some(Event::ClosingNegotiationReady {
+				channel_id: self.context.channel_id(),
+				push_msat: self.pending_remote_value_msat(),
+				shutdown_script: self.context.shutdown_scriptpubkey.clone()?,
+			})
+		} else {
+			None
+		}
+	}
+
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
 		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
+		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready()
+			|| (self.context.splice_state != SpliceState::ReadyForClosingSigned && self.context.splice_state != SpliceState::NotSplicing)  {
 			return Ok((None, None));
 		}
 
