@@ -3415,7 +3415,7 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, msg) = match peer_state.outbound_v1_channel_by_id.remove(temporary_channel_id) {
+		let (chan, msg, previous_scid) = match peer_state.outbound_v1_channel_by_id.remove(temporary_channel_id) {
 			Some(chan) => {
 				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
@@ -3427,7 +3427,12 @@ where
 						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, user_id, shutdown_res, None))
 					} else { unreachable!(); });
 				match funding_res {
-					Ok((chan, funding_msg)) => (chan, funding_msg),
+					Ok((chan, funding_msg)) => {
+						let previous_scid = if let SpliceState::AwaitingPreviousSplice { previous_scid } = chan.context.get_splice_state() {
+							Some(previous_scid)
+						} else { None };
+						(chan, funding_msg, previous_scid)
+					},
 					Err((chan, err)) => {
 						mem::drop(peer_state_lock);
 						mem::drop(per_peer_state);
@@ -3448,6 +3453,7 @@ where
 			},
 		};
 
+		let funding_script = chan.context.get_funding_redeemscript().to_v0_p2wsh();
 		peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 			node_id: chan.context.get_counterparty_node_id(),
 			msg,
@@ -3463,6 +3469,32 @@ where
 				}
 				e.insert(chan);
 			}
+		}
+
+		let previous_scid = if let Some(previous_scid) = previous_scid {
+			previous_scid
+		} else { return Ok(()); };
+		// Drop to get short_to_chan_info, then take again
+		mem::drop(peer_state_lock);
+		mem::drop(per_peer_state);
+
+		let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&previous_scid) {
+			Some((cp_id, chan_id)) => (*cp_id, *chan_id),
+			None => {
+				panic!("Got SignSpliceTx for unknown channel {}!", previous_scid);
+			}
+		};
+		let per_peer_state = self.per_peer_state.write().unwrap();
+		if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
+				chan.set_splice_funding_script(Some(funding_script));
+			} else {
+				panic!("Got SignSpliceTx for unknown channel!");
+			}
+		} else {
+			panic!("Got SignSpliceTx for unknown counterparty!");
 		}
 		Ok(())
 	}
@@ -5259,7 +5291,7 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let is_only_peer_channel = peer_state.total_channel_count() == 1;
-		match peer_state.inbound_v1_channel_by_id.entry(temporary_channel_id.clone()) {
+		let (previous_scid, new_funding_script) = match peer_state.inbound_v1_channel_by_id.entry(temporary_channel_id.clone()) {
 			hash_map::Entry::Occupied(mut channel) => {
 				if !channel.get().is_awaiting_accept() {
 					return Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() });
@@ -5297,10 +5329,39 @@ where
 					node_id: channel.get().context.get_counterparty_node_id(),
 					msg: channel.get_mut().accept_inbound_channel(user_channel_id),
 				});
+
+				if let SpliceState::AwaitingPreviousSplice { previous_scid } = channel.get().context.get_splice_state() {
+					(previous_scid, channel.get().context.get_funding_redeemscript().to_v0_p2wsh())
+				} else {
+					return Ok(())
+				}
 			}
 			hash_map::Entry::Vacant(_) => {
 				return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) });
 			}
+		};
+
+		// Drop to get short_to_chan_info, then take again
+		mem::drop(peer_state_lock);
+		mem::drop(per_peer_state);
+
+		let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&previous_scid) {
+			Some((cp_id, chan_id)) => (*cp_id, *chan_id),
+			None => {
+				panic!("Trying to get previous splice channel that doesn't exist");
+			}
+		};
+		let per_peer_state = self.per_peer_state.write().unwrap();
+		if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
+				chan.set_splice_funding_script(Some(new_funding_script));
+			} else {
+				panic!("Trying to get previous splice channel that doesn't exist");
+			}
+		} else {
+			panic!("Trying to get peer for previous splice channel that doesn't exist");
 		}
 		Ok(())
 	}
