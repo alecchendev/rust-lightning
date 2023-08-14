@@ -2202,6 +2202,28 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	#[inline]
+	fn get_splice_out_transaction_weight(&self, new_funding_script: &Script, splice_out_script: &Script) -> u64 {
+		(4 +                                                   // version
+		 1 +                                                   // input count
+		 36 +                                                  // prevout
+		 1 +                                                   // script length (0)
+		 4 +                                                   // sequence
+		 1 +                                                   // output count
+		 4                                                     // lock time
+		 )*4 +                                                 // * 4 for non-witness parts
+		2 +                                                    // witness marker and flag
+		1 +                                                    // witness element count
+		4 +                                                    // 4 element lengths (2 sigs, multisig dummy, and witness script)
+		self.context.get_funding_redeemscript().len() as u64 + // funding witness script
+		2*(1 + 71)                                             // two signatures + sighash type flags
+
+		+ ((8+1) +                                             // output values and script length
+			new_funding_script.len() as u64) * 4               // scriptpubkey and witness multiplier
+		+ ((8+1) +                                             // output values and script length
+			splice_out_script.len() as u64) * 4                // scriptpubkey and witness multiplier
+	}
+
+	#[inline]
 	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> (ClosingTransaction, u64) {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
 		assert!(self.context.pending_outbound_htlcs.is_empty());
@@ -2233,6 +2255,25 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let funding_outpoint = self.funding_outpoint().into_bitcoin_outpoint();
 
 		let closing_transaction = ClosingTransaction::new(value_to_holder as u64, value_to_counterparty as u64, holder_shutdown_script, counterparty_shutdown_script, funding_outpoint);
+		(closing_transaction, total_fee_satoshis)
+	}
+
+	fn build_splice_out_transaction(&self, total_fee_satoshis: u64, splice_amount: u64, new_funding_script: Script, as_initiator: bool) -> (ClosingTransaction, u64) {
+		debug_assert!(self.context.channel_value_satoshis - total_fee_satoshis >= MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS);
+		let value_to_holder = splice_amount - total_fee_satoshis;
+		let value_to_counterparty = self.context.channel_value_satoshis - splice_amount;
+
+		let holder_shutdown_script = if as_initiator {
+			self.get_closing_scriptpubkey()
+		} else {
+			self.context.counterparty_shutdown_scriptpubkey.clone().unwrap()
+		};
+		let funding_outpoint = self.funding_outpoint().into_bitcoin_outpoint();
+
+		let closing_transaction = ClosingTransaction::new(
+			value_to_holder, value_to_counterparty, holder_shutdown_script,
+			new_funding_script.clone(), funding_outpoint
+		);
 		(closing_transaction, total_fee_satoshis)
 	}
 
