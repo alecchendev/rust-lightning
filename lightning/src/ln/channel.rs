@@ -4158,7 +4158,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// come to consensus with our counterparty on appropriate fees, however it should be a
 		// relatively rare case. We can revisit this later, though note that in order to determine
 		// if the funders' output is dust we have to know the absolute fee we're going to use.
-		let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
+		let tx_weight = if let Some(new_funding_script) = &self.context.splice_funding_script {
+			self.get_splice_out_transaction_weight(new_funding_script, &self.get_closing_scriptpubkey())
+		} else {
+			self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()))
+		};
 		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
 		let proposed_max_total_fee_satoshis = if self.context.is_outbound() {
 				// We always add force_close_avoidance_max_fee_satoshis to our normal
@@ -4237,7 +4241,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let (our_min_fee, our_max_fee) = self.calculate_closing_fee_limits(fee_estimator);
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(our_min_fee, false);
+		let (closing_tx, total_fee_satoshis) = if let (Some(splice_amount), Some(new_funding_script)) = (self.context.counterparty_splice_amount, self.context.splice_funding_script.clone()) {
+			self.build_splice_out_transaction(our_min_fee, splice_amount, new_funding_script, true)
+		} else {
+			self.build_closing_transaction(our_min_fee, false)
+		};
 		log_trace!(logger, "Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
 			our_min_fee, our_max_fee, total_fee_satoshis);
 
@@ -4445,11 +4453,18 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		if self.context.channel_state & ChannelState::MonitorUpdateInProgress as u32 != 0 {
 			self.context.pending_counterparty_closing_signed = Some(msg.clone());
-			return Ok((None, None));
+			return Ok((None, None, None));
 		}
 
 		let funding_redeemscript = self.context.get_funding_redeemscript();
-		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
+		let (mut closing_tx, used_total_fee, is_splicing) = if let (Some(splice_amount), Some(new_funding_script)) = (self.context.counterparty_splice_amount, self.context.splice_funding_script.clone()) {
+			let as_initiator = self.context.get_splice_state() != SpliceState::SpliceCounterparty;
+			let (closing_tx, fee) = self.build_splice_out_transaction(msg.fee_satoshis, splice_amount, new_funding_script, as_initiator);
+			(closing_tx, fee, true)
+		} else {
+			let (closing_tx, fee) = self.build_closing_transaction(msg.fee_satoshis, false);
+			(closing_tx, fee, false)
+		};
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::Close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
@@ -4514,6 +4529,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					}),
 				}), signed_tx))
 			}
+		}
+
+		// If this is a splice close, just accept the fee
+		if is_splicing {
+			propose_fee!(msg.fee_satoshis);
 		}
 
 		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) = msg.fee_range {
