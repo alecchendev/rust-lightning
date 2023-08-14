@@ -6306,6 +6306,31 @@ where
 		has_update
 	}
 
+	fn maybe_generate_open_channel_from_splice(&self) -> bool {
+		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
+		let mut has_update = false;
+		{
+			let per_peer_state = self.per_peer_state.read().unwrap();
+
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for (_, chan) in peer_state.channel_by_id.iter_mut() {
+					if let Some(open_new_splice_chan_event) = chan.maybe_get_open_new_splice_channel() {
+						self.pending_events.lock().unwrap().push_back((open_new_splice_chan_event, None));
+						has_update = true;
+					}
+				}
+			}
+		}
+
+		for (counterparty_node_id, err) in handle_errors.drain(..) {
+			let _ = handle_error!(self, err, counterparty_node_id);
+		}
+
+		has_update
+	}
+
 	/// Check whether any channels have finished removing all pending updates after a shutdown
 	/// exchange and can now send a closing_signed.
 	/// Returns whether any closing_signed messages were generated.
@@ -6709,6 +6734,9 @@ where
 			}
 
 			if self.check_free_holding_cells() {
+				result = NotifyOption::DoPersist;
+			}
+			if self.maybe_generate_open_channel_from_splice() {
 				result = NotifyOption::DoPersist;
 			}
 			if self.maybe_generate_initial_closing_signed() {

@@ -36,7 +36,7 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::{WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
-use crate::events::ClosureReason;
+use crate::events::{ClosureReason, Event};
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -4152,12 +4152,27 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(())
 	}
 
+	pub fn maybe_get_open_new_splice_channel(&mut self) -> Option<Event> {
+		if !(self.closing_negotiation_ready() && self.context.splice_state == SpliceState::StartedShutdown) {
+			return None;
+		}
+		self.context.splice_state = SpliceState::OpeningNextChannel;
+		Some(Event::OpenNewSpliceChannel {
+			prev_channel_id: self.context.channel_id(),
+			counterparty_node_id: self.context.counterparty_node_id.clone(),
+			new_channel_value_satoshis: self.context.channel_value_satoshis - self.context.splice_amount_and_feerate?.0,
+			push_msat: self.context.channel_value_satoshis - self.context.value_to_self_msat / 1000,
+		})
+	}
+
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
 		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
+		if self.context.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready()
+			|| (self.context.splice_state != SpliceState::ClosingChannel
+				&& self.context.splice_state != SpliceState::NotSplicing)  {
 			return Ok((None, None));
 		}
 
