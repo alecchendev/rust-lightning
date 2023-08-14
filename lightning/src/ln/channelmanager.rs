@@ -2433,9 +2433,10 @@ where
 						let funding_txo_opt = chan_entry.get().context.get_funding_txo();
 						let their_features = &peer_state.latest_features;
 						let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
-							.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
+							.get_shutdown(&self.signer_provider, their_features,
+								target_feerate_sats_per_1000_weight, override_shutdown_script,
+								amount_satoshis)?;
 						failed_htlcs = htlcs;
-						let shutdown_msg = msgs::Shutdown { amount_satoshis, ..shutdown_msg };
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
 						// here as we don't need the monitor update to complete until we send a

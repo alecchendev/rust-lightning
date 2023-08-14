@@ -5439,9 +5439,18 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// May jump to the channel being fully shutdown (see [`Self::is_shutdown`]) in which case no
 	/// [`ChannelMonitorUpdate`] will be returned).
 	pub fn get_shutdown<SP: Deref>(&mut self, signer_provider: &SP, their_features: &InitFeatures,
-		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>)
+		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
+		amount_satoshis: Option<u64>)
 	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
 	where SP::Target: SignerProvider {
+		if amount_satoshis.is_some() {
+			if self.context.splice_state != SpliceState::NotSplicing {
+				return Err(APIError::APIMisuseError { err: "Already initated splice".to_string() });
+			}
+			self.context.splice_state = SpliceState::StartedShutdown;
+			self.set_counterparty_splice_amount(amount_satoshis);
+		}
+
 		for htlc in self.context.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
@@ -5516,7 +5525,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let shutdown = msgs::Shutdown {
 			channel_id: self.context.channel_id,
 			scriptpubkey: self.get_closing_scriptpubkey(),
-			amount_satoshis: None,
+			amount_satoshis,
 		};
 
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
