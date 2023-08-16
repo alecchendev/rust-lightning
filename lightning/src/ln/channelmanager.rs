@@ -3496,13 +3496,25 @@ where
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
+		self.funding_transaction_generated_internal(temporary_channel_id, counterparty_node_id, funding_transaction, false)
+	}
+
+	/// Allows an unsigned funding transaction (since we won't want to sign our splice tx until
+	/// we've received signatures for the new channel's initial commitment transactions)
+	pub fn funding_transaction_generated_for_splice(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
+		self.funding_transaction_generated_internal(temporary_channel_id, counterparty_node_id, funding_transaction, true)
+	}
+
+	fn funding_transaction_generated_internal(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, splicing: bool) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		for inp in funding_transaction.input.iter() {
-			if inp.witness.is_empty() {
-				return Err(APIError::APIMisuseError {
-					err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
-				});
+		if !splicing {
+			for inp in funding_transaction.input.iter() {
+				if inp.witness.is_empty() {
+					return Err(APIError::APIMisuseError {
+						err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+					});
+				}
 			}
 		}
 		{
