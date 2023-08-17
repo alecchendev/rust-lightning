@@ -5815,6 +5815,13 @@ where
 				});
 			}
 			self.issue_channel_close_events(&chan.context, ClosureReason::CooperativeClosure);
+
+			if chan.context.get_splice_state() != SpliceState::NotSplicing {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let dup = peer_state.splice_closed_channels.insert(msg.channel_id, chan);
+				debug_assert!(dup.is_none());
+			}
 		}
 		Ok(())
 	}
@@ -6098,7 +6105,29 @@ where
 					} else { Ok(()) };
 					(htlcs_to_fail, res)
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				hash_map::Entry::Vacant(_) => {
+					if let Some(mut chan) = peer_state.splice_closed_channels.remove(&msg.channel_id) {
+						let funding_txo = chan.context.get_funding_txo().unwrap();
+						let (htlcs_to_fail, monitor_update_opt) = match chan.revoke_and_ack(&msg, &self.fee_estimator, &self.logger) {
+							Ok(res) => res,
+							Err(err) => {
+								return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
+							}
+						};
+						debug_assert!(htlcs_to_fail.is_empty());
+						if let Some(monitor_update) = monitor_update_opt {
+							// The channel is closed, so if the monitor update fails there's not
+							// really much for us to do anyway?
+							let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
+							return Ok(());
+						} else {
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(
+								format!("Didn't get monitor update for revoke_and_ack on splice-closed channel for peer {}", counterparty_node_id), msg.channel_id))
+						};
+					} else {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+					}
+				}
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);

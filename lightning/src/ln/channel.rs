@@ -3329,13 +3329,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	) -> Result<(Vec<(HTLCSource, PaymentHash)>, Option<ChannelMonitorUpdate>), ChannelError>
 	where F::Target: FeeEstimator, L::Target: Logger,
 	{
-		if (self.context.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
+		if (self.context.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32)
+			&& self.context.get_splice_state() == SpliceState::NotSplicing {
 			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent revoke_and_ack when we needed a channel_reestablish".to_owned()));
 		}
-		if self.context.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.context.last_sent_closing_fee.is_some() {
+		if self.context.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.context.last_sent_closing_fee.is_some()
+			&& self.context.get_splice_state() == SpliceState::NotSplicing {
 			return Err(ChannelError::Close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned()));
 		}
 
@@ -3347,7 +3349,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		if self.context.channel_state & ChannelState::AwaitingRemoteRevoke as u32 == 0 {
+		if self.context.channel_state & ChannelState::AwaitingRemoteRevoke as u32 == 0
+			&& self.context.get_splice_state() == SpliceState::NotSplicing {
 			// Our counterparty seems to have burned their coins to us (by revoking a state when we
 			// haven't given them a new commitment transaction to broadcast). We should probably
 			// take advantage of this by updating our channel monitor, sending them an error, and
@@ -3379,6 +3382,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				secret: msg.per_commitment_secret,
 			}],
 		};
+
+		// If this is the last revocation after a splice-close, no need to update state.
+		// Just return the monitor update.
+		if self.context.get_splice_state() == SpliceState::PushedEventToOpenChannel {
+			return Ok((Vec::new(), Some(monitor_update)));
+		}
 
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
