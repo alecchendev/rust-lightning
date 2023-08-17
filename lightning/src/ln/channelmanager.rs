@@ -680,6 +680,10 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
 	/// [`ChannelMessageHandler::peer_disconnected`].
 	is_connected: bool,
+	/// TODO: docs
+	/// After we've removed a channel from our channel map after closing, we still need to know
+	/// channel state to validate the final revoke_and_ack and update the monitor
+	pub(super) splice_closed_channels: HashMap<[u8; 32], Channel<Signer>>,
 }
 
 impl <Signer: ChannelSigner> PeerState<Signer> {
@@ -7461,6 +7465,7 @@ where
 						monitor_update_blocked_actions: BTreeMap::new(),
 						actions_blocking_raa_monitor_updates: BTreeMap::new(),
 						is_connected: true,
+						splice_closed_channels: HashMap::new(),
 					}));
 				},
 				hash_map::Entry::Occupied(e) => {
@@ -8660,6 +8665,7 @@ where
 				monitor_update_blocked_actions: BTreeMap::new(),
 				actions_blocking_raa_monitor_updates: BTreeMap::new(),
 				is_connected: false,
+				splice_closed_channels: HashMap::new(),
 			}
 		};
 
