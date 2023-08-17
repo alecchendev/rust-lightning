@@ -358,6 +358,11 @@ pub trait ChannelSigner {
 	// TODO: return a Result so we can signal a validation error
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32];
 
+	/// A variant of [`Self::release_commitment_secret`] that can be called for the last
+	/// commitment transaction, without validating that a new commitment was signed.
+	/// This is used to revoke the last commitment transaction when doing a custom splice-out.
+	fn release_final_commitment_secret(&self, idx: u64) -> [u8; 32];
+
 	/// Validate the counterparty's signatures on the holder commitment transaction and HTLCs.
 	///
 	/// This is required in order for the signer to make sure that releasing a commitment
@@ -926,6 +931,10 @@ impl ChannelSigner for InMemorySigner {
 	}
 
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
+	}
+
+	fn release_final_commitment_secret(&self, idx: u64) -> [u8; 32] {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
 	}
 

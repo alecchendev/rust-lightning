@@ -3876,6 +3876,19 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 	}
 
+	/// Only for splice out!
+	fn get_final_revoke_and_ack(&self) -> msgs::RevokeAndACK {
+		let next_per_commitment_point = self.context.holder_signer.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		let per_commitment_secret = self.context.holder_signer.release_final_commitment_secret(self.context.cur_holder_commitment_transaction_number + 1);
+		msgs::RevokeAndACK {
+			channel_id: self.context.channel_id,
+			per_commitment_secret,
+			next_per_commitment_point,
+			#[cfg(taproot)]
+			next_local_nonce: None,
+		}
+	}
+
 	fn get_last_commitment_update<L: Deref>(&self, logger: &L) -> msgs::CommitmentUpdate where L::Target: Logger {
 		let mut update_add_htlcs = Vec::new();
 		let mut update_fulfill_htlcs = Vec::new();

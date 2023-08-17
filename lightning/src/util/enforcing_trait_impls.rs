@@ -111,6 +111,16 @@ impl ChannelSigner for EnforcingSigner {
 		self.inner.release_commitment_secret(idx)
 	}
 
+	fn release_final_commitment_secret(&self, idx: u64) -> [u8; 32] {
+		{
+			let mut state = self.state.lock().unwrap();
+			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);
+			assert!(idx == state.last_holder_commitment, "cannot revoke the last holder commitment - attempted to revoke {} last commitment {}", idx, state.last_holder_commitment);
+			state.last_holder_revoked_commitment = idx;
+		}
+		self.inner.release_commitment_secret(idx)
+	}
+
 	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, _preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
