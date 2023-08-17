@@ -678,6 +678,7 @@ pub(super) struct ChannelContext<Signer: ChannelSigner> {
 	counterparty_splice_amount: Option<u64>,
 	// For splicing
 	splice_funding_script: Option<Script>,
+	splice_new_channel_id: Option<[u8; 32]>,
 
 	// When we reach max(6 blocks, minimum_depth), we need to send an AnnouncementSigs message to
 	// our peer. However, we want to make sure they received it, or else rebroadcast it when we
@@ -4216,6 +4217,14 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.context.splice_funding_script = script;
 	}
 
+	pub fn get_splice_new_channel_id(&self) -> Option<[u8; 32]> {
+		self.context.splice_new_channel_id
+	}
+
+	pub fn set_splice_new_channel_id(&mut self, channel_id: Option<[u8; 32]>) {
+		self.context.splice_new_channel_id = channel_id;
+	}
+
 	/// Checks if the closing_signed negotiation is making appropriate progress, possibly returning
 	/// an Err if no progress is being made and the channel should be force-closed instead.
 	/// Should be called on a one-minute timer.
@@ -5824,6 +5833,7 @@ impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {
 				splice_state: SpliceState::NotSplicing,
 				counterparty_splice_amount: None,
 				splice_funding_script: None,
+				splice_new_channel_id: None,
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 				channel_value_satoshis,
@@ -6459,6 +6469,7 @@ impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {
 				splice_state: SpliceState::NotSplicing,
 				counterparty_splice_amount: None,
 				splice_funding_script: None,
+				splice_new_channel_id: None,
 				announcement_sigs_state: AnnouncementSigsState::NotSent,
 				secp_ctx,
 
@@ -7448,6 +7459,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut splice_state = None;
 		let mut counterparty_splice_amount = None;
 		let mut splice_funding_script = None;
+		let mut splice_new_channel_id = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -7477,6 +7489,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, splice_state, option),
 			(41, counterparty_splice_amount, option),
 			(43, splice_funding_script, option),
+			(43, splice_new_channel_id, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7574,6 +7587,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				splice_state,
 				counterparty_splice_amount,
 				splice_funding_script,
+				splice_new_channel_id,
 				announcement_sigs_state: announcement_sigs_state.unwrap(),
 				secp_ctx,
 				channel_value_satoshis,
