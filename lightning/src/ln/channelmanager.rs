@@ -5773,11 +5773,17 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), chan_entry);
+					let (closing_signed, tx, raa) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), chan_entry);
 					if let Some(msg) = closing_signed {
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 							node_id: counterparty_node_id.clone(),
 							msg,
+						});
+					}
+					if let Some(msg) = raa {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+							node_id: counterparty_node_id.clone(),
+							msg
 						});
 					}
 					if tx.is_some() {

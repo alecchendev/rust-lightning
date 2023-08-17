@@ -4246,7 +4246,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		if !self.context.is_outbound() {
 			if let Some(msg) = &self.context.pending_counterparty_closing_signed.take() {
-				return self.closing_signed(fee_estimator, &msg);
+				return self.closing_signed(fee_estimator, &msg).map(|(msg, tx, _)| (msg, tx));
 			}
 			return Ok((None, None));
 		}
@@ -4444,7 +4444,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	pub fn closing_signed<F: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned)
-		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
+		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<msgs::RevokeAndACK>), ChannelError>
 		where F::Target: FeeEstimator
 	{
 		if self.context.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
@@ -4506,7 +4506,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete as u32;
 				self.context.update_time_counter += 1;
-				return Ok((None, Some(tx)));
+				// If this is for a splice, we should return revoke and ack here
+				let temp_raa = if is_splicing {
+					Some(self.get_final_revoke_and_ack())
+				} else { None };
+				return Ok((None, Some(tx), temp_raa));
 			}
 		}
 
@@ -4532,6 +4536,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				} else { None };
 
 				self.context.last_sent_closing_fee = Some((used_fee, sig.clone()));
+
+				// If this is a splice, let's also return revoke and ack
+				let temp_raa = if is_splicing {
+					Some(self.get_final_revoke_and_ack())
+				} else { None };
+
 				return Ok((Some(msgs::ClosingSigned {
 					channel_id: self.context.channel_id,
 					fee_satoshis: used_fee,
@@ -4540,7 +4550,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 						min_fee_satoshis: our_min_fee,
 						max_fee_satoshis: our_max_fee,
 					}),
-				}), signed_tx))
+				}), signed_tx, temp_raa))
 			}
 		}
 
