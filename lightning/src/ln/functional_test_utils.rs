@@ -610,9 +610,19 @@ macro_rules! get_revoke_commit_msgs {
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path, $node_id: expr) => {
 		{
-			let events = $node.node.get_and_clear_pending_msg_events();
+			let mut events = $node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
-			match events[0] {
+			$crate::get_event_msg_from_events!(events, $event_type, $node_id)
+		}
+	}
+}
+
+/// Get an specific event message from the pending events queue.
+#[macro_export]
+macro_rules! get_event_msg_from_events {
+	($events: expr, $event_type: path, $node_id: expr) => {
+		{
+			match $events.remove(0) {
 				$event_type { ref node_id, ref msg } => {
 					assert_eq!(*node_id, $node_id);
 					(*msg).clone()
