@@ -3462,6 +3462,7 @@ where
 			node_id: chan.context.get_counterparty_node_id(),
 			msg,
 		});
+		let new_channel_id = chan.context.channel_id();
 		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
@@ -3494,6 +3495,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
 				chan.set_splice_funding_script(Some(funding_script));
+				chan.set_splice_new_channel_id(Some(new_channel_id));
 			} else {
 				panic!("Got SignSpliceTx for unknown channel!");
 			}
@@ -5570,7 +5572,12 @@ where
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			};
 
-		match peer_state.channel_by_id.entry(funding_msg.channel_id) {
+		let previous_scid = if let SpliceState::AwaitingPreviousSplice { previous_scid } = chan.context.get_splice_state() {
+			Some(previous_scid)
+		} else { None };
+		let new_channel_id = funding_msg.channel_id;
+
+		let res = match peer_state.channel_by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
 			},
@@ -5615,7 +5622,32 @@ where
 				}
 				res.map(|_| ())
 			}
+		};
+
+		let previous_scid = match previous_scid {
+			Some(previous_scid) => previous_scid,
+			None => return res,
+		};
+
+		let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&previous_scid) {
+			Some((cp_id, chan_id)) => (*cp_id, *chan_id),
+			None => {
+				panic!("Got SignSpliceTx for unknown channel {}!", previous_scid);
+			}
+		};
+		let per_peer_state = self.per_peer_state.write().unwrap();
+		if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
+				chan.set_splice_new_channel_id(Some(new_channel_id));
+			} else {
+				panic!("Got SignSpliceTx for unknown channel!");
+			}
+		} else {
+			panic!("Got SignSpliceTx for unknown counterparty!");
 		}
+		res
 	}
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
