@@ -6151,6 +6151,16 @@ where
 							// The channel is closed, so if the monitor update fails there's not
 							// really much for us to do anyway?
 							let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
+
+							// Channel ready on new channel
+							if let Some(chan_id) = chan.get_splice_new_channel_id() {
+								if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
+									let channel_ready = chan.get_channel_ready_after_splice();
+									let pending_msg_events = &mut peer_state.pending_msg_events;
+									send_channel_ready!(self, pending_msg_events, chan, channel_ready);
+								} else { debug_assert!(false); }
+							} else { debug_assert!(false); }
+
 							return Ok(());
 						} else {
 							return Err(MsgHandleErrInternal::send_err_msg_no_close(

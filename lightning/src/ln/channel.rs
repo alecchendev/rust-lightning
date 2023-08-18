@@ -4822,6 +4822,18 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.context.channel_update_status = status;
 	}
 
+	pub fn get_channel_ready_after_splice(&mut self) -> msgs::ChannelReady {
+		self.context.monitor_pending_channel_ready = false;
+		self.context.set_splice_state(SpliceState::NotSplicing);
+		let next_per_commitment_point = self.context.holder_signer.get_per_commitment_point(
+			self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		msgs::ChannelReady {
+			channel_id: self.context.channel_id(),
+			next_per_commitment_point,
+			short_channel_id_alias: Some(self.context.outbound_scid_alias),
+		}
+	}
+
 	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
