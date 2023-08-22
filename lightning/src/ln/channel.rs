@@ -3715,13 +3715,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
 		let mut funding_broadcastable =
-			if self.context.is_outbound() && self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::FundingSent as u32
-				&& !self.context.splice_state.is_awaiting_previous_splice() {
+			if self.context.is_outbound() && self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::FundingSent as u32 {
 				self.context.funding_transaction.take()
 			} else { None };
 		// That said, if the funding transaction is already confirmed (ie we're active with a
 		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
 		if self.context.channel_state & !MULTI_STATE_FLAGS >= ChannelState::ChannelReady as u32 && self.context.minimum_depth != Some(0) {
+			funding_broadcastable = None;
+		}
+		// If the provided funding transaction is a splice transaction, don't broadcast it.
+		if self.context.splice_state.is_awaiting_previous_splice() {
 			funding_broadcastable = None;
 		}
 
