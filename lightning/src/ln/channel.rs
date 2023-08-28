@@ -4183,7 +4183,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// relatively rare case. We can revisit this later, though note that in order to determine
 		// if the funders' output is dust we have to know the absolute fee we're going to use.
 		let tx_weight = if let Some(new_funding_script) = &self.context.splice_funding_script {
-			self.get_splice_out_transaction_weight(new_funding_script, &self.get_closing_scriptpubkey())
+			let weight = self.get_splice_out_transaction_weight(new_funding_script, &self.get_closing_scriptpubkey());
+			let feerate = if let Some(feerate) = self.context.splice_feerate_per_kw { feerate } else { proposed_feerate };
+			let fee = feerate as u64 * weight / 1000;
+			return (fee, fee);
 		} else {
 			self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.context.counterparty_shutdown_scriptpubkey.as_ref().unwrap()))
 		};
