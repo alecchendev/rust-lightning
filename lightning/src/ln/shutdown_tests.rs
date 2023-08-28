@@ -92,7 +92,7 @@ fn test_basic_splice_out() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty()); // Push closing negotiation event
 	// ... hmm maybe this logic should actually go in the get_and_clear_pending_events func...
 	let event = get_event!(&nodes[0], Event::ClosingNegotiationReady);
-	let (channel_id, push_msat, shutdown_script) = match event {
+	let (initial_channel_id, push_msat, shutdown_script) = match event {
 		Event::ClosingNegotiationReady { channel_id: chan_id, push_msat, shutdown_script } => {
 			assert_eq!(chan_id, channel_id);
 			(chan_id, push_msat, shutdown_script)
@@ -101,7 +101,7 @@ fn test_basic_splice_out() {
 	};
 
 	let channels = &nodes[0].node.list_channels();
-	let chan_details = channels.iter().find(|chan| chan.channel_id == channel_id).unwrap();
+	let chan_details = channels.iter().find(|chan| chan.channel_id == initial_channel_id).unwrap();
 	let short_channel_id = chan_details.short_channel_id.unwrap();
 	let new_channel_value_satoshis = chan_details.channel_value_satoshis - splice_amount;
 	let mut random_bytes = [0u8; 16];
@@ -161,9 +161,9 @@ fn test_basic_splice_out() {
 		bitcoin::OutPoint { txid: initial_funding_tx.txid(), vout: 0 }
 	);
 
-	// Fee estimation
-	let feerate_per_kw = nodes[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-	let weight = funding_tx.weight() as u64 + 224; // Expected witness weight spending initial funding tx
+	// Fee estimation - random-ish feerate to check that it gets used (not stable)
+	let feerate_per_kw = nodes[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) + 247;
+	let weight = funding_tx.weight() as u64 + 222; // Expected witness weight spending initial funding tx
 	let fee = fee_for_weight(feerate_per_kw, weight);
 	funding_tx.output.iter_mut().find(|o| o.script_pubkey == shutdown_script).unwrap().value -= fee;
 
@@ -179,8 +179,8 @@ fn test_basic_splice_out() {
 
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
 	let channel_pending = get_event!(nodes[0], Event::ChannelPending);
-	let _channel_id = if let Event::ChannelPending { channel_id, .. } = channel_pending {
-		channel_id
+	let funding_txo = if let Event::ChannelPending { funding_txo, .. } = channel_pending {
+		OutPoint { txid: funding_txo.txid, index: funding_txo.vout as u16 }
 	} else { panic!("Unexpected event"); };
 	check_added_monitors!(nodes[0], 1);
 	// We shouldn't have broadcasted the funding transaction
@@ -252,6 +252,14 @@ fn test_basic_splice_out() {
 	// Revocation! should have the case here that if we broadcast that last
 	// commitment tx, the monitors automatically revoke them
 
+	// Check that latest commitment transaction spends splice tx
+	let local_commitment = nodes[0].chain_monitor.chain_monitor.get_monitor(funding_txo).unwrap()
+		.unsafe_get_latest_holder_commitment_txn(&nodes[0].logger);
+	assert_eq!(local_commitment.len(), 1);
+	let commitment_tx = &local_commitment[0];
+	check_spends!(commitment_tx, splice_tx);
+
+	// Send some payments
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 	send_payment(&nodes[1], &[&nodes[0]], 1_000_000);
 
