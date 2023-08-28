@@ -9,6 +9,7 @@
 
 //! Tests of our shutdown and closing_signed negotiation logic.
 
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, fee_for_weight};
 use crate::ln::chan_utils::build_closing_transaction;
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::transaction::OutPoint;
@@ -142,22 +143,35 @@ fn test_basic_splice_out() {
 
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 	let funding_gen_event = get_event!(nodes[0], Event::FundingGenerationReady);
-	let (temporary_channel_id, funding_script) = if let Event::FundingGenerationReady { temporary_channel_id: chan_id, channel_value_satoshis, output_script, .. } = funding_gen_event {
+
+	// Create funding/splice transaction
+	let (temporary_channel_id, funding_script) = if let Event::FundingGenerationReady {
+		temporary_channel_id: chan_id, channel_value_satoshis, output_script, ..
+	} = funding_gen_event {
 		assert_eq!(chan_id, temporary_channel_id);
 		assert_eq!(channel_value_satoshis, new_channel_value_satoshis);
 		(chan_id, output_script)
 	} else { panic!("Unexpected event"); };
-	let funding_tx = build_closing_transaction(
-		splice_amount - 182, // manual fee to match for testing (CHANGE LATER)
+	let shutdown_script = shutdown_script.into_inner();
+	let mut funding_tx = build_closing_transaction(
+		splice_amount,
 		new_channel_value_satoshis,
-		shutdown_script.into_inner(),
+		shutdown_script.clone(),
 		funding_script,
 		bitcoin::OutPoint { txid: initial_funding_tx.txid(), vout: 0 }
 	);
 
-	nodes[0].node.funding_transaction_generated_for_splice(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+	// Fee estimation
+	let feerate_per_kw = nodes[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+	let weight = funding_tx.weight() as u64 + 224; // Expected witness weight spending initial funding tx
+	let fee = fee_for_weight(feerate_per_kw, weight);
+	funding_tx.output.iter_mut().find(|o| o.script_pubkey == shutdown_script).unwrap().value -= fee;
+
+	// funding_created ->
+	nodes[0].node.funding_transaction_generated_for_splice(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone(), feerate_per_kw).unwrap();
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
+	// funding_signed <-
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
 	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	let _channel_pending = get_event!(nodes[1], Event::ChannelPending);
@@ -169,7 +183,8 @@ fn test_basic_splice_out() {
 		channel_id
 	} else { panic!("Unexpected event"); };
 	check_added_monitors!(nodes[0], 1);
-	// Don't broadcast till we do closing signed
+	// We shouldn't have broadcasted the funding transaction
+	// (this will happen in our closing logic)
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 
 	// Closing signed ->
