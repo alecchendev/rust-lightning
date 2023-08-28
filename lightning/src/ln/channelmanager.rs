@@ -3411,7 +3411,7 @@ where
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: Fn(&OutboundV1Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
-		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
+		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, splice_feerate_per_kw: Option<u32>, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -3496,6 +3496,8 @@ where
 			if let Some(chan) = peer_state.channel_by_id.get_mut(&chan_id) {
 				chan.set_splice_funding_script(Some(funding_script));
 				chan.set_splice_new_channel_id(Some(new_channel_id));
+				debug_assert!(splice_feerate_per_kw.is_some());
+				chan.set_splice_feerate_per_kw(splice_feerate_per_kw);
 			} else {
 				panic!("Got SignSpliceTx for unknown channel!");
 			}
@@ -3507,7 +3509,7 @@ where
 
 	#[cfg(test)]
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
-		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, |_, tx| {
+		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, None, |_, tx| {
 			Ok(OutPoint { txid: tx.txid(), index: output_index })
 		})
 	}
@@ -3543,19 +3545,20 @@ where
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
-		self.funding_transaction_generated_internal(temporary_channel_id, counterparty_node_id, funding_transaction, false)
+		self.funding_transaction_generated_internal(temporary_channel_id, counterparty_node_id, funding_transaction, None)
 	}
 
-	/// Allows an unsigned funding transaction (since we won't want to sign our splice tx until
-	/// we've received signatures for the new channel's initial commitment transactions)
-	pub fn funding_transaction_generated_for_splice(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
-		self.funding_transaction_generated_internal(temporary_channel_id, counterparty_node_id, funding_transaction, true)
+	/// Variant of `funding_transaction_generated` that allows an unsigned funding transaction
+	/// (since we won't want to sign our splice tx until we've received signatures for the new
+	/// channel's initial commitment transactions).
+	pub fn funding_transaction_generated_for_splice(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, feerate_per_kw: u32) -> Result<(), APIError> {
+		self.funding_transaction_generated_internal(temporary_channel_id, counterparty_node_id, funding_transaction, Some(feerate_per_kw))
 	}
 
-	fn funding_transaction_generated_internal(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, splicing: bool) -> Result<(), APIError> {
+	fn funding_transaction_generated_internal(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, splice_feerate_per_kw: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		if !splicing {
+		if splice_feerate_per_kw.is_none() {
 			for inp in funding_transaction.input.iter() {
 				if inp.witness.is_empty() {
 					return Err(APIError::APIMisuseError {
@@ -3576,7 +3579,7 @@ where
 				});
 			}
 		}
-		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, |chan, tx| {
+		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, splice_feerate_per_kw, |chan, tx| {
 			if tx.output.len() > u16::max_value() as usize {
 				return Err(APIError::APIMisuseError {
 					err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
