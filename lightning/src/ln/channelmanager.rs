@@ -9185,7 +9185,8 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
-	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+	use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
+use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
@@ -10338,6 +10339,40 @@ mod tests {
 		assert_eq!(nodes[0].node.list_channels()[0].config.unwrap().forwarding_fee_proportional_millionths, current_fee);
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 0);
+	}
+
+	#[test]
+	fn test_splice_out_checks() {
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let mut splice_out_config = test_default_channel_config();
+		splice_out_config.channel_config.support_splice_out = true;
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(splice_out_config), None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let (_, _, _, channel_id_1, _) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+		let (_, _, _, channel_id_2, _) = create_chan_between_nodes(&nodes[0], &nodes[2]);
+
+		// Test no feature bit errors
+		assert!(nodes[0].node.splice_out(&channel_id_2, &nodes[2].node.get_our_node_id(), None,
+			10_000, None).is_err());
+
+		let too_large_splice_amount = 100_000;
+		assert!(nodes[0].node.splice_out(&channel_id_1, &nodes[1].node.get_our_node_id(), None,
+			too_large_splice_amount, None).is_err());
+
+		let splice_amount = 50_000;
+		let too_large_feerate = 100_000;
+		assert!(nodes[0].node.splice_out(&channel_id_1, &nodes[1].node.get_our_node_id(), None,
+			too_large_splice_amount, Some(too_large_feerate)).is_err());
+
+		let feerate_per_kw = nodes[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+		assert!(nodes[0].node.splice_out(&channel_id_1, &nodes[1].node.get_our_node_id(), None,
+			splice_amount, Some(feerate_per_kw)).is_ok());
+
+		let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+		assert_eq!(shutdown.splice_amount, Some(splice_amount));
+		assert_eq!(shutdown.splice_feerate_per_kw, Some(feerate_per_kw));
 	}
 }
 

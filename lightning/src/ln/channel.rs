@@ -2185,6 +2185,26 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	#[inline]
+	fn get_splice_out_transaction_weight(&self, splice_out_script: &Script) -> u64 {
+		(4 +                                                   // version
+		 1 +                                                   // input count
+		 36 +                                                  // prevout
+		 1 +                                                   // script length (0)
+		 4 +                                                   // sequence
+		 1 +                                                   // output count
+		 4                                                     // lock time
+		 )*4 +                                                 // * 4 for non-witness parts
+		2 +                                                    // witness marker and flag
+		1 +                                                    // witness element count
+		4 +                                                    // 4 element lengths (2 sigs, multisig dummy, and witness script)
+		self.context.get_funding_redeemscript().len() as u64 + // funding witness script
+		2*(1 + 71)                                             // two signatures + sighash type flags
+		+ ((8+1) + 34) * 4                                     // funding output
+		+ ((8+1) +                                             // output values and script length
+			splice_out_script.len() as u64) * 4                // scriptpubkey and witness multiplier
+	}
+
+	#[inline]
 	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> (ClosingTransaction, u64) {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
 		assert!(self.context.pending_outbound_htlcs.is_empty());
@@ -5498,6 +5518,26 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			None => false,
 		};
 
+		let (splice_amount, splice_feerate_per_kw) = if let Some((amount_sat, feerate_per_kw)) = splice_amount_and_feerate {
+			if self.context.splice_state != SpliceState::NotSplicing {
+				return Err(APIError::APIMisuseError { err: "Already initated splice".to_string() });
+			}
+			if !self.context.pending_inbound_htlcs.is_empty() || !self.context.pending_outbound_htlcs.is_empty() {
+				return Err(APIError::APIMisuseError { err: "Cannot splice with pending HTLCs".to_string() });
+			}
+			if amount_sat > self.context.value_to_self_msat / 1000 {
+				return Err(APIError::APIMisuseError { err: "Splice amount is larger than balance".to_string() });
+			}
+			let fee = feerate_per_kw as u64 * self.get_splice_out_transaction_weight(&self.get_closing_scriptpubkey()) / 1000;
+			if amount_sat.saturating_sub(fee) < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+				return Err(APIError::APIMisuseError { err: "Splice amount after fee is below dust".to_string() });
+			}
+			self.context.splice_state = SpliceState::StartedShutdown;
+			self.context.splice_amount_and_feerate = Some((amount_sat, feerate_per_kw));
+			(Some(amount_sat), Some(feerate_per_kw))
+		} else { (None, None) };
+
+
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
 		if self.context.channel_state < ChannelState::FundingSent as u32 {
@@ -5521,8 +5561,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let shutdown = msgs::Shutdown {
 			channel_id: self.context.channel_id,
 			scriptpubkey: self.get_closing_scriptpubkey(),
-			splice_amount: None,
-			splice_feerate_per_kw: None,
+			splice_amount,
+			splice_feerate_per_kw,
 		};
 
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
