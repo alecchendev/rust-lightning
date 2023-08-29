@@ -3949,6 +3949,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			Some(msgs::Shutdown {
 				channel_id: self.context.channel_id,
 				scriptpubkey: self.get_closing_scriptpubkey(),
+				splice_amount: None,
+				splice_feerate_per_kw: None,
 			})
 		} else { None };
 
@@ -4265,6 +4267,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			Some(msgs::Shutdown {
 				channel_id: self.context.channel_id,
 				scriptpubkey: self.get_closing_scriptpubkey(),
+				splice_amount: None,
+				splice_feerate_per_kw: None,
 			})
 		} else { None };
 
@@ -5517,6 +5521,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let shutdown = msgs::Shutdown {
 			channel_id: self.context.channel_id,
 			scriptpubkey: self.get_closing_scriptpubkey(),
+			splice_amount: None,
+			splice_feerate_per_kw: None,
 		};
 
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
