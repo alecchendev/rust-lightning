@@ -9,6 +9,7 @@
 
 //! Tests of our shutdown and closing_signed negotiation logic.
 
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
@@ -34,6 +35,53 @@ use core::default::Default;
 use std::convert::TryFrom;
 
 use crate::ln::functional_test_utils::*;
+
+#[test]
+fn test_basic_splice_out() {
+	// Create two nodes, 1 with custom config to support splice out
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut splice_out_config = test_default_channel_config();
+	splice_out_config.channel_config.support_splice_out = true;
+	splice_out_config.manually_accept_inbound_channels = true; // for zero conf
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(splice_out_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create a channel
+	let (_, _, _, channel_id, initial_funding_tx) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	// Rebalance to channel (idk why not)
+	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+	// Call ChannelManager::splice_out
+	let splice_amount = 10_000;
+	let feerate_per_kw = nodes[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+	nodes[0].node.splice_out(&channel_id, &nodes[1].node.get_our_node_id(), None, splice_amount,
+		Some(feerate_per_kw)).unwrap();
+
+	// Make sure shutdown is sent with extra TLVs
+	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	assert_eq!(shutdown.splice_amount, Some(splice_amount));
+	assert_eq!(shutdown.splice_feerate_per_kw, Some(feerate_per_kw));
+
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &shutdown);
+	let shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &shutdown);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty()); // Push closing negotiation event
+	// ... hmm maybe this logic should actually go in the get_and_clear_pending_events func...
+	let event = get_event!(&nodes[0], Event::OpenNewSpliceChannel);
+	let (prev_channel_id, new_channel_value_satoshis, push_msat) = match event {
+		Event::OpenNewSpliceChannel {
+			prev_channel_id, counterparty_node_id, new_channel_value_satoshis, push_msat
+		} => {
+			assert_eq!(prev_channel_id, channel_id);
+			assert_eq!(counterparty_node_id, nodes[1].node.get_our_node_id());
+			(prev_channel_id, new_channel_value_satoshis, push_msat)
+		},
+		_ => panic!("Unexpected event"),
+	};
+}
 
 #[test]
 fn pre_funding_lock_shutdown_test() {
