@@ -5439,7 +5439,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// May jump to the channel being fully shutdown (see [`Self::is_shutdown`]) in which case no
 	/// [`ChannelMonitorUpdate`] will be returned).
 	pub fn get_shutdown<SP: Deref>(&mut self, signer_provider: &SP, their_features: &InitFeatures,
-		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>)
+		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>,
+		splice_amount_and_feerate: Option<(u64, u32)>)
 	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
 	where SP::Target: SignerProvider {
 		for htlc in self.context.pending_outbound_htlcs.iter() {

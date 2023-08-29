@@ -2376,6 +2376,29 @@ where
 			.collect()
 	}
 
+	/// TODO: docs
+	pub fn splice_out(
+		&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey,
+		onchain_address: Option<ShutdownScript>,
+		amount_sat: u64, feerate_sats_per_1000_weight: Option<u32>
+	) -> Result<(), APIError> {
+		{
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+				.ok_or(APIError::APIMisuseError { err: "No connection with this peer".to_owned() })?;
+			let peer_state = peer_state_mutex.lock().unwrap();
+			if !peer_state.latest_features.supports_custom_bit(258) {
+				return Err(APIError::APIMisuseError { err: "Counterparty does not support splice out".to_owned() });
+			}
+		}
+
+		let feerate_per_kw = feerate_sats_per_1000_weight.unwrap_or(
+			self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background)
+		);
+		self.close_channel_internal(channel_id, counterparty_node_id,
+			None, onchain_address, Some((amount_sat, feerate_per_kw)))
+	}
+
 	/// Helper function that issues the channel close events
 	fn issue_channel_close_events(&self, context: &ChannelContext<<SP::Target as SignerProvider>::Signer>, closure_reason: ClosureReason) {
 		let mut pending_events_lock = self.pending_events.lock().unwrap();
@@ -2394,7 +2417,7 @@ where
 		}, None));
 	}
 
-	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>, splice_amount_and_feerate: Option<(u64, u32)>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
@@ -2413,7 +2436,9 @@ where
 						let funding_txo_opt = chan_entry.get().context.get_funding_txo();
 						let their_features = &peer_state.latest_features;
 						let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
-							.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
+							.get_shutdown(&self.signer_provider, their_features,
+								target_feerate_sats_per_1000_weight, override_shutdown_script,
+								splice_amount_and_feerate)?;
 						failed_htlcs = htlcs;
 
 						// We can send the `shutdown` message before updating the `ChannelMonitor`
@@ -2487,7 +2512,7 @@ where
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
+		self.close_channel_internal(channel_id, counterparty_node_id, None, None, None)
 	}
 
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
@@ -2521,7 +2546,7 @@ where
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel_with_feerate_and_script(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
+		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script, None)
 	}
 
 	#[inline]
