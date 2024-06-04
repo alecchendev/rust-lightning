@@ -5405,7 +5405,7 @@ impl<SP: Deref> Channel<SP> where
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
 		let channel_ready = if funding_signed.is_some() {
-			self.check_get_channel_ready(0)
+			self.check_get_channel_ready(0, logger)
 		} else { None };
 
 		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed and {} channel_ready",
