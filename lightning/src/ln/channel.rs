@@ -8257,15 +8257,15 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			debug_assert!(false, "Cannot generate an open_channel2 after we've moved forward");
 		}
 
-		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.context.holder_commitment_point.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			debug_assert!(false, "Tried to send an open_channel2 for a channel that has already advanced");
 		}
 
 		let first_per_commitment_point = self.context.holder_signer.as_ref()
-			.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number,
+			.get_per_commitment_point(self.context.holder_commitment_point.transaction_number(),
 				&self.context.secp_ctx);
 		let second_per_commitment_point = self.context.holder_signer.as_ref()
-			.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number - 1,
+			.get_per_commitment_point(self.context.holder_commitment_point.transaction_number() - 1,
 				&self.context.secp_ctx);
 		let keys = self.context.get_holder_pubkeys();
 
@@ -8399,7 +8399,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		) {
 			debug_assert!(false, "Tried to send accept_channel2 after channel had moved forward");
 		}
-		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.context.holder_commitment_point.transaction_number() != INITIAL_COMMITMENT_NUMBER {
 			debug_assert!(false, "Tried to send an accept_channel2 for a channel that has already advanced");
 		}
 
@@ -8413,9 +8413,9 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
-			self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+			self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
 		let second_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
-			self.context.cur_holder_commitment_transaction_number - 1, &self.context.secp_ctx);
+			self.context.holder_commitment_point.transaction_number() - 1, &self.context.secp_ctx);
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannelV2 {
