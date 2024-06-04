@@ -8109,14 +8109,15 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 
 #[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
-	pub fn new<ES: Deref, F: Deref>(
+	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
 		user_id: u128, config: &UserConfig, current_chain_height: u32, outbound_scid_alias: u64,
-		funding_confirmation_target: ConfirmationTarget,
+		funding_confirmation_target: ConfirmationTarget, logger: &L,
 	) -> Result<OutboundV2Channel<SP>, APIError>
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator,
+	      L::Target: Logger,
 	{
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, funding_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(funding_satoshis, channel_keys_id);
@@ -8148,6 +8149,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				channel_keys_id,
 				holder_signer,
 				pubkeys,
+				logger,
 			)?,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
 			dual_funding_context: DualFundingChannelContext {
