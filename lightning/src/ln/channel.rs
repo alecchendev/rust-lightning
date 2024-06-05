@@ -4625,7 +4625,7 @@ impl<SP: Deref> Channel<SP> where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		self.context.holder_commitment_point = self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
 		self.context.expecting_peer_commitment_signed = false;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
@@ -7868,7 +7868,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		} else {
 			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		}
-		self.context.holder_commitment_point = self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
@@ -8134,7 +8134,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
-		self.context.holder_commitment_point = self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
 
 		let (counterparty_initial_commitment_tx, funding_signed) = self.context.get_funding_signed_msg(logger);
 
