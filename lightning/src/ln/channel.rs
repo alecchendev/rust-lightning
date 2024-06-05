@@ -1166,10 +1166,12 @@ impl HolderCommitmentPoint where {
 		where SP::Target: SignerProvider, L::Target: Logger
 	{
 		if let HolderCommitmentPoint::Uninitialized { transaction_number } = self {
-			let current = signer.as_ref().get_per_commitment_point(*transaction_number, secp_ctx); // TODO
-			log_trace!(logger, "Retrieved current per-commitment point {}", transaction_number);
-			*self = HolderCommitmentPoint::PendingNext { transaction_number: *transaction_number, current };
-			// TODO: handle error case when get_per_commitment_point becomes async
+			if let Ok(current) = signer.as_ref().get_per_commitment_point(*transaction_number, secp_ctx) {
+				log_trace!(logger, "Retrieved initial per-commitment point {}", transaction_number);
+				*self = HolderCommitmentPoint::PendingNext { transaction_number: *transaction_number, current };
+			} else {
+				log_trace!(logger, "Initial per-commitment point {} is pending", transaction_number);
+			}
 		}
 
 		if let HolderCommitmentPoint::Available { transaction_number, next, .. } = self {
@@ -1180,10 +1182,12 @@ impl HolderCommitmentPoint where {
 		}
 
 		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
-			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx); // TODO
-			log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
-			*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
-			// TODO: handle error case when get_per_commitment_point becomes async
+			if let Ok(next) = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx) {
+				log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
+				*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+			} else {
+				log_trace!(logger, "Next per-commitment point {} is pending", transaction_number);
+			}
 		}
 	}
 }
@@ -5562,7 +5566,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment_point.transaction_number() - 1;
 		if msg.next_remote_commitment_number > 0 {
-			let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx);
+			let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx).expect("TODO");
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
 				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {

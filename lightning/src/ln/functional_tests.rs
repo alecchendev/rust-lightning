@@ -740,7 +740,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 pubkeys.funding_pubkey)
 	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point, remote_funding) = {
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
@@ -749,7 +749,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 pubkeys.funding_pubkey)
 	};
 
@@ -1473,7 +1473,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 chan_signer.as_ref().release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap(),
 		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
@@ -1485,7 +1485,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap(),
 		 chan_signer.as_ref().pubkeys().funding_pubkey)
 	};
 
