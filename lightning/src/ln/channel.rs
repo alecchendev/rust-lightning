@@ -1159,37 +1159,28 @@ impl HolderCommitmentPoint where {
 		}
 	}
 
-	pub fn advance<SP: Deref, L: Deref>(&self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L) -> Self
+	pub fn advance<SP: Deref, L: Deref>(&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L)
 		where SP::Target: SignerProvider, L::Target: Logger
 	{
-		match self {
-			HolderCommitmentPoint::Available { transaction_number, next, .. } => {
-				HolderCommitmentPoint::PendingNext {
-					transaction_number: transaction_number - 1,
-					current: *next,
-				}.request_next(signer, secp_ctx, logger)
-			}
-			_ => panic!("Cannot advance holder commitment; there is no next point available")
+		if let HolderCommitmentPoint::Uninitialized { transaction_number } = self {
+			let current = signer.as_ref().get_per_commitment_point(*transaction_number, secp_ctx); // TODO
+			log_trace!(logger, "Retrieved current per-commitment point {}", transaction_number);
+			*self = HolderCommitmentPoint::PendingNext { transaction_number: *transaction_number, current };
+			// TODO: handle error case when get_per_commitment_point becomes async
 		}
-	}
 
-	pub fn request_next<SP: Deref, L: Deref>(&self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L) -> Self
-		where SP::Target: SignerProvider, L::Target: Logger
-	{
-		match self {
-			HolderCommitmentPoint::Uninitialized { transaction_number } => {
-				let current = signer.as_ref().get_per_commitment_point(*transaction_number, secp_ctx);
-				log_trace!(logger, "Retrieved current per-commitment point {}", transaction_number);
-				HolderCommitmentPoint::PendingNext { transaction_number: *transaction_number, current }.request_next(signer, secp_ctx, logger)
-				// TODO: handle error case when get_per_commitment_point becomes async
-			}
-			HolderCommitmentPoint::PendingNext { transaction_number, current } => {
-				let next = signer.as_ref().get_per_commitment_point(transaction_number - 1, secp_ctx);
-				log_trace!(logger, "Retrieved next per-commitment point {}", transaction_number - 1);
-				HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next }
-				// TODO: handle error case when get_per_commitment_point becomes async
-			}
-			HolderCommitmentPoint::Available { .. } => *self,
+		if let HolderCommitmentPoint::Available { transaction_number, next, .. } = self {
+			*self = HolderCommitmentPoint::PendingNext {
+				transaction_number: *transaction_number - 1,
+				current: *next,
+			};
+		}
+
+		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
+			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx); // TODO
+			log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
+			*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+			// TODO: handle error case when get_per_commitment_point becomes async
 		}
 	}
 }
@@ -1816,7 +1807,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
 		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-		let holder_commitment_point = HolderCommitmentPoint::new().request_next(&holder_signer, &secp_ctx, &&logger);
+		let mut holder_commitment_point = HolderCommitmentPoint::new();
+		holder_commitment_point.advance(&holder_signer, &secp_ctx, &&logger);
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
@@ -2046,7 +2038,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
 		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-		let holder_commitment_point = HolderCommitmentPoint::new().request_next(&holder_signer, &secp_ctx, logger);
+		let mut holder_commitment_point = HolderCommitmentPoint::new();
+		holder_commitment_point.advance(&holder_signer, &secp_ctx, logger);
 
 		Ok(Self {
 			user_id,
