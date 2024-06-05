@@ -1153,7 +1153,7 @@ impl HolderCommitmentPoint where {
 
 	pub fn next_point(&self) -> Option<PublicKey> {
 		match self {
-			HolderCommitmentPoint::Uninitialized { .. } => panic!("holder commitment is uninitialized"),
+			HolderCommitmentPoint::Uninitialized { .. } => None,
 			HolderCommitmentPoint::PendingNext { .. } => None,
 			HolderCommitmentPoint::Available { next, .. } => Some(*next),
 		}
