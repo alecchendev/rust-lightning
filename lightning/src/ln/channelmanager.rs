@@ -8887,7 +8887,15 @@ where
 					}
 					None
 				}
-				ChannelPhase::UnfundedInboundV1(_) => None,
+				ChannelPhase::UnfundedInboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					if let Some(msg) = chan.signer_maybe_unblocked(&&logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+							node_id,
+							msg,
+						});
+					}
+				},
 			}
 		};
 
