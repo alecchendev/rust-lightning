@@ -19,6 +19,58 @@ use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureR
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
+use crate::util::test_channel_signer::{EnforcementState, ops};
+
+
+#[cfg(feature = "std")]
+#[test]
+fn test_open_channel() {
+	// Simulate acquiring the signature for `funding_created` asynchronously.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Open an outbound channel simulating an async signer.
+	let channel_id_0 = EnforcementState::with_default_unavailable(
+		ops::GET_PER_COMMITMENT_POINT,
+		|| nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None)
+	).expect("Failed to create channel");
+
+	{
+		let msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
+	}
+
+	nodes[0].set_channel_signer_ops_available(&nodes[1].node.get_our_node_id(), &channel_id_0, ops::GET_PER_COMMITMENT_POINT, true);
+	nodes[0].node.signer_unblocked(None);
+
+	// nodes[0] --- open_channel --> nodes[1]
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	// Handle an inbound channel simulating an async signer.
+	EnforcementState::with_default_unavailable(
+		ops::GET_PER_COMMITMENT_POINT,
+		|| nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg)
+	);
+
+	{
+		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
+	}
+
+	let channel_id_1 = {
+		let channels = nodes[1].node.list_channels();
+		assert_eq!(channels.len(), 1, "expected one channel, not {}", channels.len());
+		channels[0].channel_id
+	};
+
+	nodes[1].set_channel_signer_ops_available(&nodes[0].node.get_our_node_id(), &channel_id_1, ops::GET_PER_COMMITMENT_POINT, true);
+	nodes[1].node.signer_unblocked(None);
+
+	// nodes[0] <-- accept_channel --- nodes[1]
+	get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+}
 
 #[test]
 fn test_async_commitment_signature_for_funding_created() {

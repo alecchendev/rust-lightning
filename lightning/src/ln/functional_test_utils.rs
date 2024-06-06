@@ -30,7 +30,7 @@ use crate::util::errors::APIError;
 #[cfg(test)]
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
-use crate::util::test_channel_signer::TestChannelSigner;
+use crate::util::test_channel_signer::{TestChannelSigner, ops};
 use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -520,6 +520,28 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 			self.keys_manager.unavailable_signers.lock().unwrap()
 				.insert(channel_keys_id.unwrap());
 		}
+	}
+
+	/// Changes the channel signer's availability for the specified peer and channel.
+	///
+	/// When `available` is set to `true`, the channel signer will behave normally. When set to
+	/// `false`, the channel signer will act like an off-line remote signer and will return `Err` for
+	/// several of the signing methods. Currently, only `get_per_commitment_point` and
+	/// `release_commitment_secret` are affected by this setting.
+	/// several of the signing methods.
+	#[cfg(test)]
+	pub fn set_channel_signer_ops_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, mask: u32, available: bool) {
+		let per_peer_state = self.node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
+		let signer = (|| {
+			match chan_lock.channel_by_id.get(chan_id) {
+				Some(phase) => phase.context().get_signer(),
+				None => panic!("Couldn't find a channel with id {}", chan_id),
+			}
+		})();
+		log_debug!(self.logger, "Setting channel signer for {} as {}available for {} (mask={})",
+			chan_id, if available { "" } else { "un" }, ops::string_from(mask), mask);
+		signer.as_ecdsa().unwrap().set_ops_available(mask, available);
 	}
 }
 

@@ -18,6 +18,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+use core::cell::RefCell;
 use core::cmp;
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
@@ -76,6 +77,51 @@ pub struct TestChannelSigner {
 	pub available: Arc<Mutex<bool>>,
 }
 
+/// Channel signer operations that can be individually enabled and disabled. If a particular value
+/// is set in the `TestChannelSigner::unavailable` bitmask, then that operation will return an
+/// error.
+pub mod ops {
+	pub const GET_PER_COMMITMENT_POINT: u32                  = 1 << 0;
+	pub const RELEASE_COMMITMENT_SECRET: u32                 = 1 << 1;
+	pub const VALIDATE_HOLDER_COMMITMENT: u32                = 1 << 2;
+	pub const SIGN_COUNTERPARTY_COMMITMENT: u32              = 1 << 3;
+	pub const VALIDATE_COUNTERPARTY_REVOCATION: u32          = 1 << 4;
+	pub const SIGN_HOLDER_COMMITMENT_AND_HTLCS: u32          = 1 << 5;
+	pub const SIGN_JUSTICE_REVOKED_OUTPUT: u32               = 1 << 6;
+	pub const SIGN_JUSTICE_REVOKED_HTLC: u32                 = 1 << 7;
+	pub const SIGN_HOLDER_HTLC_TRANSACTION: u32              = 1 << 8;
+	pub const SIGN_COUNTERPARTY_HTLC_TRANSATION: u32         = 1 << 9;
+	pub const SIGN_CLOSING_TRANSACTION: u32                  = 1 << 10;
+	pub const SIGN_HOLDER_ANCHOR_INPUT: u32                  = 1 << 11;
+	pub const SIGN_CHANNEL_ANNOUNCMENT_WITH_FUNDING_KEY: u32 = 1 << 12;
+
+	#[cfg(test)]
+	pub fn string_from(mask: u32) -> String {
+		if mask == 0 {
+			return "nothing".to_owned();
+		}
+		if mask == !(0 as u32) {
+			return "everything".to_owned();
+		}
+
+		vec![
+			if (mask & GET_PER_COMMITMENT_POINT) != 0 { Some("get_per_commitment_point") } else { None },
+			if (mask & RELEASE_COMMITMENT_SECRET) != 0 { Some("release_commitment_secret") } else { None },
+			if (mask & VALIDATE_HOLDER_COMMITMENT) != 0 { Some("validate_holder_commitment") } else { None },
+			if (mask & SIGN_COUNTERPARTY_COMMITMENT) != 0 { Some("sign_counterparty_commitment") } else { None },
+			if (mask & VALIDATE_COUNTERPARTY_REVOCATION) != 0 { Some("validate_counterparty_revocation") } else { None },
+			if (mask & SIGN_HOLDER_COMMITMENT_AND_HTLCS) != 0 { Some("sign_holder_commitment_and_htlcs") } else { None },
+			if (mask & SIGN_JUSTICE_REVOKED_OUTPUT) != 0 { Some("sign_justice_revoked_output") } else { None },
+			if (mask & SIGN_JUSTICE_REVOKED_HTLC) != 0 { Some("sign_justice_revoked_htlc") } else { None },
+			if (mask & SIGN_HOLDER_HTLC_TRANSACTION) != 0 { Some("sign_holder_htlc_transaction") } else { None },
+			if (mask & SIGN_COUNTERPARTY_HTLC_TRANSATION) != 0 { Some("sign_counterparty_htlc_transation") } else { None },
+			if (mask & SIGN_CLOSING_TRANSACTION) != 0 { Some("sign_closing_transaction") } else { None },
+			if (mask & SIGN_HOLDER_ANCHOR_INPUT) != 0 { Some("sign_holder_anchor_input") } else { None },
+			if (mask & SIGN_CHANNEL_ANNOUNCMENT_WITH_FUNDING_KEY) != 0 { Some("sign_channel_announcment_with_funding_key") } else { None },
+		].iter().flatten().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+	}
+}
+
 impl PartialEq for TestChannelSigner {
 	fn eq(&self, o: &Self) -> bool {
 		Arc::ptr_eq(&self.state, &o.state)
@@ -123,12 +169,29 @@ impl TestChannelSigner {
 	pub fn set_available(&self, available: bool) {
 		*self.available.lock().unwrap() = available;
 	}
+
+	#[cfg(test)]
+	pub fn set_ops_available(&self, mask: u32, available: bool) {
+		let mut state = self.get_enforcement_state();
+		if available {
+			state.unavailable_signer_ops &= !mask;  // clear the bits that are now available
+		} else {
+			state.unavailable_signer_ops |= mask;   // set the bits that are now unavailable
+		}
+	}
+
+	fn is_signer_available(&self, ops_mask: u32) -> bool {
+		self.state.lock().unwrap().is_signer_available(ops_mask)
+	}
 }
 
 impl ChannelSigner for TestChannelSigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()> {
 		// TODO: implement a mask in EnforcementState to let you test signatures being
 		// unavailable
+		if !self.is_signer_available(ops::GET_PER_COMMITMENT_POINT) {
+			return Err(());
+		}
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
@@ -379,9 +442,18 @@ pub struct EnforcementState {
 	pub last_holder_revoked_commitment: u64,
 	/// The last validated holder commitment number, backwards counting
 	pub last_holder_commitment: u64,
+	/// A flag array that indicates which signing operations are currently *not* available in the
+	/// channel. When a method's bit is set, then the signer will act as if the signature is
+	/// unavailable and return an error result.
+	pub unavailable_signer_ops: u32,
 }
 
 impl EnforcementState {
+	#[cfg(feature = "std")]
+	thread_local! {
+		static DEFAULT_UNAVAILABLE_SIGNER_OPS: RefCell<u32> = RefCell::new(0);
+	}
+
 	/// Enforcement state for a new channel
 	pub fn new() -> Self {
 		EnforcementState {
@@ -389,6 +461,32 @@ impl EnforcementState {
 			last_counterparty_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+			unavailable_signer_ops: {
+				#[cfg(feature = "std")]
+				{
+					EnforcementState::DEFAULT_UNAVAILABLE_SIGNER_OPS.with(|ops| *ops.borrow())
+				}
+				#[cfg(not(feature = "std"))]
+				{
+					0
+				}
+			}
 		}
+	}
+
+	pub fn is_signer_available(&self, ops_mask: u32) -> bool {
+		(self.unavailable_signer_ops & ops_mask) == 0
+	}
+
+	#[cfg(feature = "std")]
+	pub fn with_default_unavailable<F, R>(ops: u32, f: F) -> R
+	where F: FnOnce() -> R
+	{
+		EnforcementState::DEFAULT_UNAVAILABLE_SIGNER_OPS.with(|unavailable_ops| {
+			unavailable_ops.replace(ops);
+			let res = f();
+			unavailable_ops.replace(0);
+			res
+		})
 	}
 }
