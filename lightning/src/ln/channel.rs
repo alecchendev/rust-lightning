@@ -1143,11 +1143,14 @@ impl HolderCommitmentPoint where {
 		}
 	}
 
-	pub fn current_point(&self) -> PublicKey {
+	// TODO: return option?
+	// if we return an option, we are either going to have to do some insane propogating
+	// or just to .expect() in a couple places one level up (where this is called)
+	pub fn current_point(&self) -> Option<PublicKey> {
 		match self {
-			HolderCommitmentPoint::Uninitialized { .. } => panic!("holder commitment is uninitialized"),
-			HolderCommitmentPoint::PendingNext { current, .. } => *current,
-			HolderCommitmentPoint::Available { current, .. } => *current,
+			HolderCommitmentPoint::Uninitialized { .. } => None,
+			HolderCommitmentPoint::PendingNext { current, .. } => Some(*current),
+			HolderCommitmentPoint::Available { current, .. } => Some(*current),
 		}
 	}
 
@@ -8901,7 +8904,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, cur_holder_commitment_point, required),
+			(45, cur_holder_commitment_point, option),
 			(47, next_holder_commitment_point, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
