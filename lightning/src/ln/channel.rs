@@ -6563,7 +6563,8 @@ impl<SP: Deref> Channel<SP> where
 		debug_assert!(self.context.holder_commitment_point.is_available());
 		msgs::ChannelReady {
 			channel_id: self.context.channel_id(),
-			next_per_commitment_point: self.context.holder_commitment_point.current_point(),
+			next_per_commitment_point: self.context.holder_commitment_point.current_point()
+				.expect("TODO"),
 			short_channel_id_alias: Some(self.context.outbound_scid_alias),
 		}
 	}
