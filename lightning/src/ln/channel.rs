@@ -5426,7 +5426,7 @@ impl<SP: Deref> Channel<SP> where
 		// TODO: handle non-available case when get_per_commitment_point becomes async
 		debug_assert!(self.context.holder_commitment_point.is_available());
 		let next_per_commitment_point = self.context.holder_commitment_point.current_point()
-			.expect("Should not be releasing commitment secret before retrieving first commitment point");
+			.expect("TODO");
 		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.holder_commitment_point.transaction_number() + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.context.channel_id,
