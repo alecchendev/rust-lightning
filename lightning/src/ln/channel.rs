@@ -2764,7 +2764,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_holder_transaction_keys(&self) -> TxCreationKeys {
-		let per_commitment_point = self.holder_commitment_point.current_point();
+		let per_commitment_point = self.holder_commitment_point.current_point()
+			.expect("Should not build commitment transaction before retrieving first commitment point");
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -5424,7 +5425,8 @@ impl<SP: Deref> Channel<SP> where
 		debug_assert!(self.context.holder_commitment_point.transaction_number() <= INITIAL_COMMITMENT_NUMBER + 2);
 		// TODO: handle non-available case when get_per_commitment_point becomes async
 		debug_assert!(self.context.holder_commitment_point.is_available());
-		let next_per_commitment_point = self.context.holder_commitment_point.current_point();
+		let next_per_commitment_point = self.context.holder_commitment_point.current_point()
+			.expect("Should not be releasing commitment secret before retrieving first commitment point");
 		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.holder_commitment_point.transaction_number() + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.context.channel_id,
