@@ -7464,6 +7464,12 @@ impl<SP: Deref> Channel<SP> where
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	/// We tried to send a `open_channel` message but our commitment point wasn't ready.
+	/// This flag tells us we need to send it when we are retried once the
+	/// commiment point is ready.
+	///
+	/// TODO: don't need to persist this since we'll send open_channel again on connect?
+	pub signer_pending_open_channel: bool,
 }
 
 impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
@@ -7508,7 +7514,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				pubkeys,
 				logger,
 			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			signer_pending_open_channel: false,
 		};
 		Ok(chan)
 	}
