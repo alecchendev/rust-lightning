@@ -7632,7 +7632,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		debug_assert!(self.context.holder_commitment_point.is_available());
-		let first_per_commitment_point = self.context.holder_commitment_point.current_point();
+		let first_per_commitment_point = self.context.holder_commitment_point.current_point().expect("TODO");
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::OpenChannel {
@@ -8031,7 +8031,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
 		debug_assert!(self.context.holder_commitment_point.is_available());
-		let first_per_commitment_point = self.context.holder_commitment_point.current_point();
+		let first_per_commitment_point = self.context.holder_commitment_point.current_point().expect("TODO");
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
